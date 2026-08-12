@@ -1,6 +1,6 @@
 # Dependency and licensing audit
 
-This audit covers the repository state on **2026-08-11**. The authoritative
+This audit covers the repository state on **2026-08-12**. The authoritative
 inputs are the [Cargo workspace manifest](../Cargo.toml), the
 [core crate manifest](../crates/gpu-core/Cargo.toml), the
 [NAPI crate manifest](../crates/gpu-napi/Cargo.toml), the
@@ -67,15 +67,14 @@ The public `let-smi` package has no ordinary JavaScript runtime dependency. It
 uses Node built-ins and declares the following project-owned packages as optional
 dependencies, each pinned to `0.1.0`:
 
-| Optional package           | Supported target    | Runtime/linkage and redistribution                                                                                                                                                                                  |
-| -------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `let-smi-darwin-arm64`     | macOS Apple Silicon | Contains only the matching MIT-licensed prebuilt `.node` artifact and package metadata. Requires Node.js `>=20`; OS frameworks are supplied by macOS. No install script, download step, shell, or root requirement. |
-| `let-smi-darwin-x64`       | macOS Intel         | Same packaging policy; best-effort Intel-era provider coverage.                                                                                                                                                     |
-| `let-smi-linux-arm64-gnu`  | Linux ARM64, glibc  | Same packaging policy; requires a compatible glibc host. Optional vendor drivers remain host-installed.                                                                                                             |
-| `let-smi-linux-x64-gnu`    | Linux x64, glibc    | Same packaging policy; requires a compatible glibc host.                                                                                                                                                            |
-| `let-smi-linux-x64-musl`   | Linux x64, musl     | Same packaging policy; requires a compatible musl host. No hard-linked libdrm/vendor runtime is introduced.                                                                                                         |
-| `let-smi-win32-arm64-msvc` | Windows ARM64       | Same packaging policy; requires supported Windows system APIs. Optional vendor runtimes remain host-installed.                                                                                                      |
-| `let-smi-win32-x64-msvc`   | Windows x64         | Same packaging policy; requires supported Windows system APIs.                                                                                                                                                      |
+| Optional package          | Supported target    | Runtime/linkage and redistribution                                                                                                                                                                                  |
+| ------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `let-smi-darwin-arm64`    | macOS Apple Silicon | Contains only the matching MIT-licensed prebuilt `.node` artifact and package metadata. Requires Node.js `>=20`; OS frameworks are supplied by macOS. No install script, download step, shell, or root requirement. |
+| `let-smi-darwin-x64`      | macOS Intel         | Same packaging policy; best-effort Intel-era provider coverage.                                                                                                                                                     |
+| `let-smi-linux-arm64-gnu` | Linux ARM64, glibc  | Same packaging policy; requires a compatible glibc host. Optional vendor drivers remain host-installed.                                                                                                             |
+| `let-smi-linux-x64-gnu`   | Linux x64, glibc    | Same packaging policy; requires a compatible glibc host.                                                                                                                                                            |
+| `let-smi-linux-x64-musl`  | Linux x64, musl     | Same packaging policy; requires a compatible musl host. No hard-linked libdrm/vendor runtime is introduced.                                                                                                         |
+| `let-smi-win32-x64-msvc`  | Windows x64         | Same packaging policy; requires supported Windows system APIs.                                                                                                                                                      |
 
 The [native loader](../packages/gpu/native.cjs) selects a local addon or one of
 these optional packages with `require()`. It determines Linux libc from
@@ -160,3 +159,9 @@ audit date where practical.
 - The npm manifests use exact direct versions and the full JavaScript graph is
   recorded in `pnpm-lock.yaml`. CI/release installs use the frozen lockfile and
   do not run dependency lifecycle scripts.
+- The workspace resolves transitive `esbuild` to `0.28.2`, excluding
+  GHSA-g7r4-m6w7-qqqr in the Windows-only development-server surface. Neither
+  esbuild nor the development server ships in the public package.
+- The 2026-08-12 scans found no known vulnerabilities with `pnpm audit
+--audit-level low` or `cargo audit`. RustSec emitted only the documented
+  macOS `paste` maintenance warning.

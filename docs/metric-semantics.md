@@ -138,7 +138,9 @@ fans are not exposed as GPU fans.
 Process entries are conservative. Current NVML support merges compute and
 graphics process lists by PID and exposes framebuffer allocation as
 `memoryUsedBytes`. A process name is included only when the operating system/
-NVML call succeeds.
+NVML call succeeds. A supported successful query with no processes returns
+`processes: []`; unsupported or failed process telemetry omits `processes`
+instead of presenting unavailability as an empty result.
 
 No current backend fabricates process utilization. PDH instance PIDs and DRM
 fdinfo require additional lifetime, namespace, and attribution work before they
@@ -150,10 +152,13 @@ can become reliable cross-platform process snapshots.
 observation. `intervalMs`, when present, is the actual measured monotonic
 interval—not merely the requested watch interval.
 
-Counter providers return `first-sample` until a baseline exists. A one-shot
-positive `windowMs` lets the native worker wait and retry that case. Continuous
-listeners share provider baselines, so their requested interval controls
-delivery cadence while each metric's `intervalMs` remains authoritative.
+Counter providers return `first-sample` for every affected rate field until a
+baseline exists. A one-shot positive `windowMs` lets the native worker wait and
+retry when any requested snapshot field has that state. Continuous listeners
+share provider baselines, so their requested interval controls delivery cadence
+while each metric's measured `intervalMs` remains authoritative. On Windows,
+PDH collections for adapters in the same sampling batch are coalesced and share
+the same interval.
 
 Candidates more than 30 seconds old cannot win field selection. They remain in
 merge diagnostics with `selected: false`; if every candidate is stale, the

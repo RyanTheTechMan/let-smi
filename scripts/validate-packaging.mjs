@@ -9,7 +9,6 @@ const packageManifest = await readJson("packages/gpu/package.json");
 const targetPackages = new Map([
   ["aarch64-apple-darwin", "let-smi-darwin-arm64"],
   ["x86_64-apple-darwin", "let-smi-darwin-x64"],
-  ["aarch64-pc-windows-msvc", "let-smi-win32-arm64-msvc"],
   ["x86_64-pc-windows-msvc", "let-smi-win32-x64-msvc"],
   ["aarch64-unknown-linux-gnu", "let-smi-linux-arm64-gnu"],
   ["x86_64-unknown-linux-gnu", "let-smi-linux-x64-gnu"],
@@ -65,7 +64,7 @@ for (const requiredFile of ["dist", "native.cjs", "README.md", "LICENSE"]) {
 }
 
 const packageScripts = requireRecord(packageManifest.scripts, "scripts");
-for (const prohibitedScript of ["install", "postinstall"]) {
+for (const prohibitedScript of ["preinstall", "install", "postinstall"]) {
   assert(
     packageScripts[prohibitedScript] === undefined,
     `public package must not define ${prohibitedScript}`,
@@ -106,6 +105,10 @@ const loader = await readFile(
   resolve(repositoryRoot, "packages/gpu/native.cjs"),
   "utf8",
 );
+assert(
+  !loader.includes("NAPI_RS_NATIVE_LIBRARY_PATH"),
+  "native loader must not accept an environment-controlled addon path",
+);
 for (const prohibited of [
   /node:child_process/u,
   /require\(["']child_process["']\)/u,
@@ -120,6 +123,36 @@ for (const prohibited of [
 assert(
   loader.includes("process.report"),
   "native loader must detect libc without an executable",
+);
+
+for (const workflow of ["ci.yml", "native.yml", "release.yml"]) {
+  const source = await readFile(
+    resolve(repositoryRoot, ".github/workflows", workflow),
+    "utf8",
+  );
+  for (const match of source.matchAll(/^\s*uses:\s*([^\s#]+)/gmu)) {
+    const reference = match[1];
+    if (reference.startsWith("./")) continue;
+    const separator = reference.lastIndexOf("@");
+    const revision = separator === -1 ? "" : reference.slice(separator + 1);
+    assert(
+      /^[0-9a-f]{40}$/u.test(revision),
+      `${workflow} action must be pinned to a full commit: ${reference}`,
+    );
+  }
+}
+
+const nativeWorkflow = await readFile(
+  resolve(repositoryRoot, ".github/workflows/native.yml"),
+  "utf8",
+);
+assert(
+  /node:22\.23\.2-alpine@sha256:[0-9a-f]{64}/u.test(nativeWorkflow),
+  "native workflow container image must be digest-pinned",
+);
+assert(
+  nativeWorkflow.includes("tool: cargo-zigbuild@0.23.0"),
+  "native workflow must pin cargo-zigbuild",
 );
 
 console.log(

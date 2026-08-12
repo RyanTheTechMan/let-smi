@@ -10,17 +10,19 @@ use crate::model::{
 };
 use crate::provider::{InventoryProvider, ProviderMetadata, TelemetryProvider};
 use core_foundation_sys::array::{
-    CFArrayAppendValue, CFArrayCreateMutable, CFArrayGetCount, CFArrayGetValueAtIndex,
-    kCFTypeArrayCallBacks,
+    CFArrayAppendValue, CFArrayCreateMutable, CFArrayGetCount, CFArrayGetTypeID,
+    CFArrayGetValueAtIndex, kCFTypeArrayCallBacks,
 };
-use core_foundation_sys::base::{CFIndex, CFRelease, CFTypeRef, kCFAllocatorDefault};
+use core_foundation_sys::base::{
+    CFGetTypeID, CFIndex, CFRelease, CFTypeID, CFTypeRef, kCFAllocatorDefault,
+};
 use core_foundation_sys::dictionary::{
-    CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryGetValue, CFDictionaryRef,
-    CFDictionarySetValue, CFMutableDictionaryRef,
+    CFDictionaryCreateMutableCopy, CFDictionaryGetCount, CFDictionaryGetTypeID,
+    CFDictionaryGetValue, CFDictionaryRef, CFDictionarySetValue, CFMutableDictionaryRef,
 };
 use core_foundation_sys::string::{
     CFStringCreateWithBytes, CFStringGetCString, CFStringGetLength,
-    CFStringGetMaximumSizeForEncoding, CFStringRef, kCFStringEncodingUTF8,
+    CFStringGetMaximumSizeForEncoding, CFStringGetTypeID, CFStringRef, kCFStringEncodingUTF8,
 };
 use libloading::Library;
 use parking_lot::Mutex;
@@ -30,6 +32,13 @@ use std::time::Instant;
 
 const PROVIDER_ID: &str = "apple-ioreport";
 const MAX_VALIDATED_MACOS_MAJOR: u32 = 27;
+const MAX_IOREPORT_DICTIONARY_ENTRIES: usize = 4_096;
+const MAX_IOREPORT_CHANNELS: usize = 4_096;
+const MAX_SELECTED_IOREPORT_CHANNELS: usize = 256;
+const MAX_IOREPORT_STATES: usize = 256;
+const MAX_CF_STRING_UNITS: usize = 4_096;
+const MAX_CF_STRING_BYTES: usize = 16_384;
+const MAX_SYSCTL_VERSION_BYTES: usize = 256;
 
 type SubscriptionRef = *const c_void;
 type CopyAllChannelsFn = unsafe extern "C" fn(u64, u64) -> CFDictionaryRef;
@@ -155,25 +164,55 @@ impl IoReport {
         if all.is_null() {
             return Err("IOReport returned no channels".into());
         }
-        let array = dictionary_value(all, "IOReportChannels")
-            .map(|value| value.cast())
-            .ok_or_else(|| {
-                // SAFETY: all is a retained object from CopyAllChannels.
+        if !cf_type_is(all.cast(), unsafe { CFDictionaryGetTypeID() }) {
+            // SAFETY: all is a retained object from CopyAllChannels.
+            unsafe { CFRelease(all.cast()) };
+            return Err("IOReport returned a non-dictionary channel container".into());
+        }
+        // SAFETY: the runtime type was checked above.
+        let dictionary_count = unsafe { CFDictionaryGetCount(all) };
+        if let Err(error) = checked_cf_count(
+            "IOReport channel dictionary",
+            dictionary_count,
+            MAX_IOREPORT_DICTIONARY_ENTRIES,
+        ) {
+            // SAFETY: all is retained.
+            unsafe { CFRelease(all.cast()) };
+            return Err(error);
+        }
+        let array_value = dictionary_value(all, "IOReportChannels").ok_or_else(|| {
+            // SAFETY: all is a retained object from CopyAllChannels.
+            unsafe { CFRelease(all.cast()) };
+            "IOReport channel dictionary is malformed".to_owned()
+        })?;
+        if !cf_type_is(array_value, unsafe { CFArrayGetTypeID() }) {
+            // SAFETY: all is retained.
+            unsafe { CFRelease(all.cast()) };
+            return Err("IOReportChannels is not an array".into());
+        }
+        let array = array_value.cast();
+        // SAFETY: the runtime type was checked above.
+        let capacity = match checked_cf_count(
+            "IOReport channel array",
+            unsafe { CFArrayGetCount(array) },
+            MAX_IOREPORT_CHANNELS,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                // SAFETY: all is retained.
                 unsafe { CFRelease(all.cast()) };
-                "IOReport channel dictionary is malformed".to_owned()
-            })?;
+                return Err(error);
+            }
+        };
         // SAFETY: all is a valid CFDictionary and the allocator is the system
         // default. The returned objects are checked and retained.
-        let mutable = unsafe {
-            CFDictionaryCreateMutableCopy(kCFAllocatorDefault, CFDictionaryGetCount(all), all)
-        };
+        let mutable =
+            unsafe { CFDictionaryCreateMutableCopy(kCFAllocatorDefault, dictionary_count, all) };
         if mutable.is_null() {
             // SAFETY: all is retained.
             unsafe { CFRelease(all.cast()) };
             return Err("failed to copy IOReport channels".into());
         }
-        // SAFETY: array is the IOReportChannels array from all.
-        let capacity = unsafe { CFArrayGetCount(array) };
         // SAFETY: callbacks retain selected channel dictionaries.
         let selected = unsafe {
             CFArrayCreateMutable(
@@ -192,9 +231,15 @@ impl IoReport {
         }
 
         let mut metadata = Vec::new();
+        let mut malformed_item = false;
+        let mut selection_overflow = false;
         for index in 0..capacity {
             // SAFETY: index is bounded by the array count.
-            let item = unsafe { CFArrayGetValueAtIndex(array, index) }.cast();
+            let item: CFDictionaryRef = unsafe { CFArrayGetValueAtIndex(array, index) }.cast();
+            if !cf_type_is(item.cast(), unsafe { CFDictionaryGetTypeID() }) {
+                malformed_item = true;
+                break;
+            }
             let channel = Channel {
                 group: cf_string(
                     // SAFETY: item came from an IOReport channel array.
@@ -216,10 +261,27 @@ impl IoReport {
                 .to_owned(),
             };
             if is_gpu_channel(&channel) {
+                if metadata.len() >= MAX_SELECTED_IOREPORT_CHANNELS {
+                    selection_overflow = true;
+                    break;
+                }
                 // SAFETY: selected has type callbacks and item remains valid.
                 unsafe { CFArrayAppendValue(selected, item.cast()) };
                 metadata.push(channel);
             }
+        }
+        if malformed_item || selection_overflow {
+            // SAFETY: all three objects are retained.
+            unsafe {
+                CFRelease(selected.cast());
+                CFRelease(mutable.cast());
+                CFRelease(all.cast());
+            }
+            return Err(if malformed_item {
+                "IOReport channel array contained a non-dictionary item".into()
+            } else {
+                format!("IOReport selected more than {MAX_SELECTED_IOREPORT_CHANNELS} GPU channels")
+            });
         }
         if metadata.is_empty() {
             // SAFETY: objects are retained.
@@ -345,10 +407,17 @@ impl IoReport {
         elapsed: std::time::Duration,
     ) -> std::result::Result<ProviderSample, String> {
         let items = dictionary_value(delta, "IOReportChannels")
-            .map(|value| value.cast())
             .ok_or_else(|| "IOReport delta has no channel array".to_owned())?;
-        // SAFETY: items is the IOReportChannels CFArray in delta.
-        let count = unsafe { CFArrayGetCount(items) };
+        if !cf_type_is(items, unsafe { CFArrayGetTypeID() }) {
+            return Err("IOReport delta channel value is not an array".into());
+        }
+        let items = items.cast();
+        // SAFETY: items was runtime-checked as a CFArray.
+        let count = checked_cf_count(
+            "IOReport delta channel array",
+            unsafe { CFArrayGetCount(items) },
+            MAX_SELECTED_IOREPORT_CHANNELS,
+        )?;
         if usize::try_from(count).ok() != Some(self.metadata.len()) {
             return Err("IOReport delta channel count changed".into());
         }
@@ -358,12 +427,20 @@ impl IoReport {
         let mut energy_joules = 0_f64;
         for index in 0..count {
             // SAFETY: index is bounded by count.
-            let item = unsafe { CFArrayGetValueAtIndex(items, index) }.cast();
-            let channel = &self.metadata[usize::try_from(index).unwrap_or(0)];
+            let item: CFDictionaryRef = unsafe { CFArrayGetValueAtIndex(items, index) }.cast();
+            if !cf_type_is(item.cast(), unsafe { CFDictionaryGetTypeID() }) {
+                return Err("IOReport delta contained a non-dictionary channel".into());
+            }
+            let channel = &self.metadata[usize::try_from(index)
+                .map_err(|_| "IOReport channel index does not fit usize")?];
             if channel.group == "GPU Stats" {
                 // SAFETY: item is a state channel selected during discovery.
                 let state_count = unsafe { (self.api.state_count)(item) };
+                let state_count =
+                    checked_i32_count("IOReport state array", state_count, MAX_IOREPORT_STATES)?;
                 for state_index in 0..state_count {
+                    let state_index = i32::try_from(state_index)
+                        .map_err(|_| "IOReport state index does not fit i32")?;
                     // SAFETY: state_index is bounded by state_count.
                     let name = cf_string(unsafe { (self.api.state_name)(item, state_index) });
                     // SAFETY: state_index is bounded by state_count.
@@ -372,9 +449,13 @@ impl IoReport {
                         return Err("IOReport returned negative state residency".into());
                     }
                     let residency = i128::from(residency);
-                    total_ticks += residency;
+                    total_ticks = total_ticks
+                        .checked_add(residency)
+                        .ok_or_else(|| "IOReport total state residency overflowed".to_owned())?;
                     if is_active_state(&name) {
-                        active_ticks += residency;
+                        active_ticks = active_ticks.checked_add(residency).ok_or_else(|| {
+                            "IOReport active state residency overflowed".to_owned()
+                        })?;
                     }
                 }
             } else if channel.group == "Energy Model" && channel.name == "GPU Energy" {
@@ -384,6 +465,9 @@ impl IoReport {
                     return Err("IOReport returned negative GPU energy".into());
                 }
                 energy_joules += energy_to_joules(raw as f64, &channel.unit)?;
+                if !energy_joules.is_finite() {
+                    return Err("IOReport GPU energy overflowed".into());
+                }
             }
         }
 
@@ -588,6 +672,9 @@ fn energy_to_joules(value: f64, unit: &str) -> std::result::Result<f64, String> 
 }
 
 fn dictionary_value(dictionary: CFDictionaryRef, key: &str) -> Option<CFTypeRef> {
+    if !cf_type_is(dictionary.cast(), unsafe { CFDictionaryGetTypeID() }) {
+        return None;
+    }
     let key = cf_create_string(key)?;
     // SAFETY: dictionary and key are valid CF objects for this call.
     let value = unsafe { CFDictionaryGetValue(dictionary, key.cast()) };
@@ -623,17 +710,26 @@ fn cf_create_string(value: &str) -> Option<CFStringRef> {
 }
 
 fn cf_string(value: CFStringRef) -> String {
-    if value.is_null() {
+    if !cf_type_is(value.cast(), unsafe { CFStringGetTypeID() }) {
         return String::new();
     }
     // SAFETY: value is a CFString returned by IOReport.
     let length = unsafe { CFStringGetLength(value) };
+    let Ok(length_usize) = usize::try_from(length) else {
+        return String::new();
+    };
+    if length_usize > MAX_CF_STRING_UNITS {
+        return String::new();
+    }
     // SAFETY: encoding is valid and length came from the same string.
     let capacity = unsafe { CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) }
         .saturating_add(1);
     let Ok(capacity_usize) = usize::try_from(capacity) else {
         return String::new();
     };
+    if capacity_usize == 0 || capacity_usize > MAX_CF_STRING_BYTES {
+        return String::new();
+    }
     let mut buffer = vec![0_i8; capacity_usize];
     // SAFETY: buffer is writable for capacity bytes and value is a CFString.
     let converted =
@@ -661,6 +757,7 @@ fn macos_major() -> Option<u32> {
         )
     } != 0
         || size == 0
+        || size > MAX_SYSCTL_VERSION_BYTES
     {
         return None;
     }
@@ -686,6 +783,41 @@ fn macos_major() -> Option<u32> {
     text.split('.').next()?.parse().ok()
 }
 
+fn cf_type_is(value: CFTypeRef, expected: CFTypeID) -> bool {
+    // SAFETY: callers only pass non-owning references returned by
+    // CoreFoundation/IOReport; null is rejected before querying the type ID.
+    !value.is_null() && unsafe { CFGetTypeID(value) == expected }
+}
+
+fn checked_cf_count(
+    label: &str,
+    count: CFIndex,
+    maximum: usize,
+) -> std::result::Result<CFIndex, String> {
+    let count_usize = usize::try_from(count)
+        .map_err(|_| format!("{label} returned a negative or oversized count"))?;
+    if count_usize > maximum {
+        return Err(format!(
+            "{label} count {count_usize} exceeds the {maximum}-entry safety limit"
+        ));
+    }
+    Ok(count)
+}
+
+fn checked_i32_count(
+    label: &str,
+    count: i32,
+    maximum: usize,
+) -> std::result::Result<usize, String> {
+    let count = usize::try_from(count).map_err(|_| format!("{label} returned a negative count"))?;
+    if count > maximum {
+        return Err(format!(
+            "{label} count {count} exceeds the {maximum}-entry safety limit"
+        ));
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,6 +834,16 @@ mod tests {
         assert_eq!(energy_to_joules(1_000.0, "mJ").unwrap(), 1.0);
         assert_eq!(energy_to_joules(1_000_000.0, "uJ").unwrap(), 1.0);
         assert!(energy_to_joules(1.0, "ticks").is_err());
+    }
+
+    #[test]
+    fn rejects_negative_and_oversized_private_api_counts() {
+        assert!(checked_cf_count("fixture", -1, 10).is_err());
+        assert!(checked_cf_count("fixture", 11, 10).is_err());
+        assert_eq!(checked_cf_count("fixture", 10, 10), Ok(10));
+        assert!(checked_i32_count("fixture", -1, 10).is_err());
+        assert!(checked_i32_count("fixture", 11, 10).is_err());
+        assert_eq!(checked_i32_count("fixture", 10, 10), Ok(10));
     }
 
     #[test]

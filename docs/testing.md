@@ -29,6 +29,23 @@ pnpm pack:check
 checks discovery/diagnostics, calls `close()` twice, and proves the process exits.
 It does not bypass the custom package loader.
 
+Before a release candidate is pushed, also run the advisory and workflow
+security checks:
+
+```sh
+pnpm audit --audit-level low
+cargo audit
+zizmor --pedantic .
+node scripts/validate-packaging.mjs
+node scripts/check-no-subprocess.mjs
+```
+
+`cargo audit` and `zizmor` are maintainer tools rather than repository runtime
+dependencies. A RustSec maintenance warning is not equivalent to a security
+advisory; record both separately. `validate-packaging.mjs` enforces commit-pinned
+Actions, a digest-pinned container, exact native target/package sets, and the
+absence of an environment-controlled addon path.
+
 ## Deterministic Rust coverage
 
 Core tests use mock providers and injected Linux filesystem roots. They cover:
@@ -46,10 +63,14 @@ Core tests use mock providers and injected Linux filesystem roots. They cover:
 - IOReport state/energy calculations and AppleSMC key decoding without relying
   on a particular sensor value;
 - subscription coalescing, cancellation wake-up, monitor-close wake-up, and
-  idempotent provider shutdown.
+  idempotent provider shutdown;
+- bounded sampler commands/subscriptions, one in-flight `next()`, nonblocking
+  finalization, and close-aware queued calls;
+- trusted Windows NVML candidates and malformed/oversized/truncated PDH arrays.
 
-Platform code is type-checked for Windows x64/ARM64, Linux x64/ARM64, and macOS
-x64/ARM64. Linux musl is built in the native artifact matrix.
+Windows x64 is the only packaged Windows target in this release. Linux
+x64/ARM64 and macOS x64/ARM64 remain in the native build matrix; Linux musl is
+built separately. Windows ARM64 is neither claimed nor packaged.
 
 ## Deterministic TypeScript coverage
 
@@ -91,13 +112,13 @@ Every row should validate discovery, stable IDs across repeated enumeration,
 capabilities, a bounded sample, clean shutdown, and diagnostic behavior. Metrics
 unsupported by the hardware/driver are acceptable unavailable values.
 
-| Platform            | Required lab coverage                                                                                                                  |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Windows             | NVIDIA-only; AMD-only; Intel integrated; Intel+NVIDIA; Intel+AMD; multiple NVIDIA; multiple AMD; ARM64 inventory where hardware exists |
-| Linux               | NVIDIA; AMD; Intel i915; Intel Xe; hybrid; headless; x64 glibc; ARM64 glibc; x64 musl load test                                        |
-| macOS               | Apple M1, M2, M3, M4-or-newer; Intel integrated; Intel Mac with AMD discrete where available                                           |
-| Virtual/partitioned | VM/no GPU; disabled device; NVIDIA MIG; vGPU; SR-IOV; eGPU attach/detach                                                               |
-| Failure modes       | missing vendor libraries; permission-denied sysfs; reset/device lost; sleep/wake; driver reload; private Apple API unavailable         |
+| Platform            | Required lab coverage                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Windows x64         | NVIDIA-only; AMD-only; Intel integrated; Intel+NVIDIA; Intel+AMD; multiple NVIDIA; multiple AMD                                |
+| Linux               | NVIDIA; AMD; Intel i915; Intel Xe; hybrid; headless; x64 glibc; ARM64 glibc; x64 musl load test                                |
+| macOS               | Apple M1, M2, M3, M4-or-newer; Intel integrated; Intel Mac with AMD discrete where available                                   |
+| Virtual/partitioned | VM/no GPU; disabled device; NVIDIA MIG; vGPU; SR-IOV; eGPU attach/detach                                                       |
+| Failure modes       | missing vendor libraries; permission-denied sysfs; reset/device lost; sleep/wake; driver reload; private Apple API unavailable |
 
 Hardware tests must identify their prerequisites and skip cleanly. They must not
 install driver libraries, ask for sudo/admin, or infer success from a nonzero
@@ -119,3 +140,52 @@ For a new hardware/driver combination:
 Diagnostic output is appropriate for bug reports because it contains provider
 status and merge choices, but no environment variables, command output, file
 contents, or unrelated system inventory.
+
+## Observed Windows x64 validation — 2026-08-12
+
+Hardware-tested on Windows 10 Pro display version 25H2, build 26200.8973, x64,
+as a normal user. The host had one Intel UHD Graphics 770 and one NVIDIA
+GeForce RTX 5090. Node was 25.9.0, pnpm 10.32.1, Rust/Cargo 1.88.0, NVIDIA
+driver 610.47, and NVML 13.610.47.
+
+Implemented and hardware-tested:
+
+- DXGI/D3DKMT returned exactly two physical adapters, with correct vendor,
+  device/subsystem, PCI, LUID, hybrid kind, and dedicated/shared memory fields;
+- repeated enumeration, refresh, concurrent samples, monitor reopen, and a
+  worker thread preserved device count and stable IDs;
+- NVML loaded from the Windows system directory, correlated to the DXGI NVIDIA
+  adapter by PCI identity, and did not create a duplicate;
+- RTX 5090 exposed NVML overall and memory-controller utilization, framebuffer
+  total/used, temperature, power/limit/energy, four clock domains, fan percent
+  and RPM, encoder/decoder utilization, requested processes, and NVIDIA vendor
+  information. PDH supplied uncovered graphics/copy engine fields;
+- Intel UHD 770 used DXGI identity/memory and PDH overall/graphics/copy/decoder
+  utilization. A real idle `0` was available; compute/encoder were unavailable
+  when no matching counters appeared. No Intel temperature, power, clocks, or
+  process telemetry was claimed;
+- the first Intel stream sample returned `first-sample` for every PDH rate
+  field; the next stream sample exposed its measured interval, while the
+  one-shot validation sample used a measured 1,000 ms interval;
+- four pending 60-second subscription reads left
+  `fs.promises.readFile()` completing in 1–2 ms; AbortSignal, early break,
+  monitor close with pending `next()`, two shared listeners, and worker-thread
+  isolation all passed. Normal `close()` took 2–3 ms, and the child process
+  exited within its 20-second hard deadline.
+
+Secure diagnostic probes only: ADLX was absent; the Level Zero loader DLL was
+detected, but Sysman telemetry is unimplemented and the provider remained
+`loaded: false`/`unsupported` with zero matches. Unimplemented or untested here:
+AMD Windows telemetry/hardware, ADLX telemetry, Level Zero Sysman, Windows
+ARM64, multiple physical NVIDIA GPUs, partitions, vGPU/MIG, device
+reset/removal, sleep/wake, and permission-denied driver configurations.
+
+Run the repeatable hybrid test after a debug or release native build:
+
+```sh
+pnpm test:windows-hardware
+```
+
+It skips cleanly unless Windows x64 has exactly one Intel and one NVIDIA
+physical adapter with functional PDH and NVML. The parent process enforces the
+exit deadline.

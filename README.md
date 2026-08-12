@@ -3,16 +3,18 @@
 Cross-platform GPU discovery and telemetry for Node.js, with a TypeScript API
 backed by a Rust/NAPI-RS core.
 
-`let-smi` discovers NVIDIA, AMD, Intel, Apple, and unknown GPUs without invoking
-vendor command-line tools. Providers contribute identity and metrics
-field-by-field, so missing driver libraries or sensors degrade to explicit
-unavailable values instead of preventing the package from loading.
+`let-smi` discovers GPUs through platform inventory APIs without invoking vendor
+command-line tools. NVIDIA, Intel, and unknown-device paths are implemented on
+Windows; other platform/provider rows below distinguish implementation from
+hardware validation. Providers contribute identity and metrics field-by-field,
+so missing driver libraries or sensors degrade to explicit unavailable values
+instead of preventing the package from loading.
 
 ```sh
 npm install let-smi
 ```
 
-Supported prebuilt targets are Windows x64/ARM64, Linux x64/ARM64 glibc, Linux
+Supported prebuilt targets are Windows x64, Linux x64/ARM64 glibc, Linux
 x64 musl, and macOS x64/Apple Silicon. Normal consumers do not need Rust,
 CMake, Python, a compiler, or a binary download install script.
 
@@ -55,22 +57,24 @@ The table describes the current implementation, not the theoretical capability
 of a vendor SDK. A check means the provider is implemented; actual fields still
 depend on the installed driver, device, permissions, and sensors.
 
-| Platform/provider   | Inventory                       | Overall utilization                                      | Other current telemetry                                                                         |
-| ------------------- | ------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Windows generic     | DXGI name, IDs, memory, LUID    | PDH maximum active WDDM engine                           | graphics/compute/copy/encode/decode engine groups when present                                  |
-| Windows NVIDIA      | DXGI + dynamically loaded NVML  | NVML, with PDH fallback                                  | VRAM, temperature, power/energy, clocks, fan, encoder/decoder, processes, and NVIDIA extensions |
-| Windows AMD         | DXGI                            | PDH                                                      | ADLX is diagnostic-only in this release; vendor sensors are unavailable                         |
-| Windows Intel       | DXGI                            | PDH                                                      | Level Zero is diagnostic-only in this release                                                   |
-| Linux generic       | PCI + DRM sysfs, driver, IDs    | provider-dependent                                       | hwmon sensors where safely attributable                                                         |
-| Linux NVIDIA        | sysfs + dynamically loaded NVML | NVML                                                     | NVML metrics and extensions as above                                                            |
-| Linux AMD           | PCI/DRM sysfs                   | `gpu_busy_percent`                                       | VRAM/GTT, memory busy, hwmon temperature/power/energy/fan, DPM clocks                           |
-| Linux Intel i915/Xe | PCI/DRM sysfs                   | unavailable unless a future accurate provider is present | current GT clocks and attributable hwmon sensors                                                |
-| macOS Apple Silicon | Metal                           | dynamically loaded IOReport active residency             | IOReport GPU power/energy and AppleSMC temperature                                              |
-| Intel-era macOS     | Metal best effort               | unavailable in the validated release                     | AppleSMC temperature only when a single GPU can be correlated safely                            |
+| Platform/provider   | Inventory                                | Overall utilization                                      | Other current telemetry                                                                         |
+| ------------------- | ---------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Windows generic     | DXGI name, IDs, memory, LUID             | PDH maximum active WDDM engine                           | graphics/compute/copy/encode/decode engine groups when present                                  |
+| Windows NVIDIA      | DXGI + dynamically loaded NVML           | NVML, with PDH fallback                                  | VRAM, temperature, power/energy, clocks, fan, encoder/decoder, processes, and NVIDIA extensions |
+| Windows AMD         | DXGI code path; not hardware-tested here | PDH code path; not hardware-tested here                  | ADLX is unimplemented/diagnostic-only; no AMD sensor claim                                      |
+| Windows Intel       | DXGI/D3DKMT; UHD 770 tested              | PDH; UHD 770 tested                                      | Level Zero Sysman is unimplemented/diagnostic-only                                              |
+| Linux generic       | PCI + DRM sysfs, driver, IDs             | provider-dependent                                       | hwmon sensors where safely attributable                                                         |
+| Linux NVIDIA        | sysfs + dynamically loaded NVML          | NVML                                                     | NVML metrics and extensions as above                                                            |
+| Linux AMD           | PCI/DRM sysfs                            | `gpu_busy_percent`                                       | VRAM/GTT, memory busy, hwmon temperature/power/energy/fan, DPM clocks                           |
+| Linux Intel i915/Xe | PCI/DRM sysfs                            | unavailable unless a future accurate provider is present | current GT clocks and attributable hwmon sensors                                                |
+| macOS Apple Silicon | Metal                                    | dynamically loaded IOReport active residency             | IOReport GPU power/energy and AppleSMC temperature                                              |
+| Intel-era macOS     | Metal best effort                        | unavailable in the validated release                     | AppleSMC temperature only when a single GPU can be correlated safely                            |
 
 Unknown vendors remain discoverable when DXGI, PCI/DRM, or Metal can enumerate
-them. Windows ARM64, macOS Intel, multi-GPU/hybrid systems, partitions, and legacy
-drivers require broader hardware-lab validation; see [provider details](docs/providers.md).
+them. The Intel+NVIDIA Windows x64 hybrid path is hardware-tested. Windows
+ARM64 is not supported or packaged; macOS Intel, AMD Windows hardware,
+partitions, and legacy drivers require broader hardware-lab validation; see
+[provider details](docs/providers.md).
 
 ## Metrics are explicit
 
@@ -208,6 +212,7 @@ Repository documentation:
 - [architecture](docs/architecture.md)
 - [providers and support details](docs/providers.md)
 - [metric semantics](docs/metric-semantics.md)
+- [security and reliability](docs/security.md)
 - [dependency and licensing audit](docs/dependencies.md)
 - [testing and hardware matrix](docs/testing.md)
 
@@ -215,6 +220,7 @@ Repository documentation:
 
 - ADLX and Level Zero are safe runtime diagnostic boundaries, not telemetry
   implementations yet.
+- Windows ARM64 is not a supported or packaged target.
 - Accurate Intel Linux device-wide utilization needs Level Zero Sysman or an
   i915 PMU implementation; per-client DRM fdinfo is not presented as overall.
 - Intel-era IOAccelerator telemetry is disabled pending real-hardware validation.

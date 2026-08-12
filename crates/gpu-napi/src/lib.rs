@@ -1,9 +1,9 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use let_smi_core::sampler::{SampleSubscription, WatchOptions};
-use let_smi_core::{GpuError, GpuMonitor, MonitorOptions, SampleRequest};
-use napi::bindgen_prelude::{AsyncTask, ToNapiValue, TypeName};
-use napi::{Env, Error, Status, Task, ValueType};
+use let_smi_core::{GpuError, GpuMonitor};
+use napi::bindgen_prelude::{ToNapiValue, TypeName};
+use napi::{Error, Status, ValueType};
 use napi_derive::napi;
 use serde::Deserialize;
 use serde::Serialize;
@@ -13,6 +13,12 @@ use std::sync::Arc;
 #[napi]
 pub struct NativeMonitor {
     monitor: GpuMonitor,
+}
+
+impl Drop for NativeMonitor {
+    fn drop(&mut self) {
+        self.monitor.request_close_nonblocking();
+    }
 }
 
 #[napi]
@@ -26,17 +32,19 @@ impl NativeMonitor {
     }
 
     #[napi(js_name = "sampleGpu")]
-    pub fn sample_gpu(
+    pub async fn sample_gpu(
         &self,
         device_id: String,
         options: Option<Value>,
-    ) -> napi::Result<AsyncTask<SampleTask>> {
+    ) -> napi::Result<JsonValue> {
         let request = decode_options(options)?;
-        Ok(AsyncTask::new(SampleTask {
-            monitor: self.monitor.clone(),
-            device_id,
-            request,
-        }))
+        let monitor = self.monitor.clone();
+        let output =
+            napi::bindgen_prelude::spawn_blocking(move || monitor.sample(device_id, request))
+                .await
+                .map_err(to_join_error)?
+                .map_err(to_napi_error)?;
+        to_js_value(output).map(JsonValue).map_err(to_napi_error)
     }
 
     #[napi(js_name = "subscribeGpu")]
@@ -56,30 +64,41 @@ impl NativeMonitor {
     }
 
     #[napi(js_name = "vendorInfo")]
-    pub fn vendor_info(&self, device_id: String) -> napi::Result<Value> {
-        self.monitor
-            .vendor_info(&device_id)
+    pub async fn vendor_info(&self, device_id: String) -> napi::Result<JsonValue> {
+        let monitor = self.monitor.clone();
+        napi::bindgen_prelude::spawn_blocking(move || monitor.vendor_info(&device_id))
+            .await
+            .map_err(to_join_error)?
             .map(normalize_js_numbers)
+            .map(JsonValue)
             .map_err(to_napi_error)
     }
 
     #[napi]
-    pub fn diagnostics(&self) -> napi::Result<Value> {
-        to_js_value(self.monitor.diagnostics()).map_err(to_napi_error)
+    pub async fn diagnostics(&self) -> napi::Result<JsonValue> {
+        let monitor = self.monitor.clone();
+        let output = napi::bindgen_prelude::spawn_blocking(move || monitor.diagnostics())
+            .await
+            .map_err(to_join_error)?;
+        to_js_value(output).map(JsonValue).map_err(to_napi_error)
     }
 
     #[napi]
-    pub fn refresh(&self) -> AsyncTask<RefreshTask> {
-        AsyncTask::new(RefreshTask {
-            monitor: self.monitor.clone(),
-        })
+    pub async fn refresh(&self) -> napi::Result<JsonValue> {
+        let monitor = self.monitor.clone();
+        let output = napi::bindgen_prelude::spawn_blocking(move || monitor.refresh())
+            .await
+            .map_err(to_join_error)?
+            .map_err(to_napi_error)?;
+        to_js_value(output).map(JsonValue).map_err(to_napi_error)
     }
 
     #[napi]
-    pub fn close(&self) -> AsyncTask<CloseTask> {
-        AsyncTask::new(CloseTask {
-            monitor: self.monitor.clone(),
-        })
+    pub async fn close(&self) -> napi::Result<()> {
+        let monitor = self.monitor.clone();
+        napi::bindgen_prelude::spawn_blocking(move || monitor.close())
+            .await
+            .map_err(to_join_error)
     }
 }
 
@@ -91,10 +110,14 @@ pub struct NativeSubscription {
 #[napi]
 impl NativeSubscription {
     #[napi]
-    pub fn next(&self) -> AsyncTask<NextTask> {
-        AsyncTask::new(NextTask {
-            subscription: Arc::clone(&self.subscription),
-        })
+    pub async fn next(&self) -> napi::Result<Option<JsonValue>> {
+        let future = self.subscription.next_async().map_err(to_napi_error)?;
+        future
+            .await
+            .map_err(to_napi_error)?
+            .map(|output| to_js_value(output).map(JsonValue))
+            .transpose()
+            .map_err(to_napi_error)
     }
 
     #[napi]
@@ -110,106 +133,17 @@ impl Drop for NativeSubscription {
 }
 
 #[napi(js_name = "openMonitor")]
-pub fn open_monitor(options: Option<Value>) -> napi::Result<AsyncTask<OpenTask>> {
+pub async fn open_monitor(options: Option<Value>) -> napi::Result<NativeMonitor> {
     let options = decode_options(options)?;
-    Ok(AsyncTask::new(OpenTask { options }))
-}
-
-pub struct OpenTask {
-    options: MonitorOptions,
-}
-
-impl Task for OpenTask {
-    type Output = GpuMonitor;
-    type JsValue = NativeMonitor;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        GpuMonitor::open(self.options.clone()).map_err(to_napi_error)
-    }
-
-    fn resolve(&mut self, _env: Env, monitor: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(NativeMonitor { monitor })
-    }
-}
-
-pub struct SampleTask {
-    monitor: GpuMonitor,
-    device_id: String,
-    request: SampleRequest,
-}
-
-impl Task for SampleTask {
-    type Output = let_smi_core::snapshot::GpuSnapshot;
-    type JsValue = JsonValue;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        self.monitor
-            .sample(self.device_id.clone(), self.request.clone())
-            .map_err(to_napi_error)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        to_js_value(output).map(JsonValue).map_err(to_napi_error)
-    }
-}
-
-pub struct NextTask {
-    subscription: Arc<SampleSubscription>,
-}
-
-impl Task for NextTask {
-    type Output = Option<let_smi_core::snapshot::GpuSnapshot>;
-    type JsValue = Option<JsonValue>;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        self.subscription.next().map_err(to_napi_error)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        output
-            .map(|output| to_js_value(output).map(JsonValue))
-            .transpose()
-            .map_err(to_napi_error)
-    }
-}
-
-pub struct RefreshTask {
-    monitor: GpuMonitor,
-}
-
-impl Task for RefreshTask {
-    type Output = Vec<let_smi_core::CanonicalGpu>;
-    type JsValue = JsonValue;
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        self.monitor.refresh().map_err(to_napi_error)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        to_js_value(output).map(JsonValue).map_err(to_napi_error)
-    }
-}
-
-pub struct CloseTask {
-    monitor: GpuMonitor,
-}
-
-impl Task for CloseTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> napi::Result<Self::Output> {
-        self.monitor.close();
-        Ok(())
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(output)
-    }
+    let monitor = napi::bindgen_prelude::spawn_blocking(move || GpuMonitor::open(options))
+        .await
+        .map_err(to_join_error)?
+        .map_err(to_napi_error)?;
+    Ok(NativeMonitor { monitor })
 }
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct NativeWatchOptions {
     #[serde(default = "default_interval_ms")]
     interval_ms: u64,
@@ -314,9 +248,15 @@ fn to_napi_error(error: GpuError) -> Error {
     let status = match error {
         GpuError::InvalidArgument(_) | GpuError::DeviceNotFound(_) => Status::InvalidArg,
         GpuError::MonitorClosed | GpuError::StreamClosed => Status::Cancelled,
-        GpuError::Provider { .. } | GpuError::Internal(_) => Status::GenericFailure,
+        GpuError::Backpressure(_) | GpuError::Provider { .. } | GpuError::Internal(_) => {
+            Status::GenericFailure
+        }
     };
     Error::new(status, error.to_string())
+}
+
+fn to_join_error(error: impl std::fmt::Display) -> Error {
+    Error::new(Status::GenericFailure, error.to_string())
 }
 
 #[cfg(test)]
@@ -331,5 +271,15 @@ mod tests {
         }));
         assert!(value["sampledAt"].as_f64().is_some());
         assert!(value["bytes"].as_f64().is_some());
+    }
+
+    #[test]
+    fn native_option_decoding_rejects_unknown_fields() {
+        let error = decode_options::<NativeWatchOptions>(Some(serde_json::json!({
+            "intervalMs": 1000,
+            "typo": true
+        })))
+        .expect_err("unknown native options must be rejected");
+        assert_eq!(error.status, Status::InvalidArg);
     }
 }

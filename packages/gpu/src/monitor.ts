@@ -29,6 +29,7 @@ import {
 } from "./validation.js";
 
 type MonitorState = "open" | "closing" | "closed";
+const MAX_GPU_DESCRIPTORS = 1_024;
 
 class ManagedSubscription implements GpuSubscription {
   readonly #native: NativeGpuSubscription;
@@ -78,6 +79,12 @@ class ManagedSubscription implements GpuSubscription {
 function parseGpuList(value: unknown, client: GpuClient): readonly Gpu[] {
   if (!Array.isArray(value)) {
     throw new GpuNativeDataError("gpus", "expected an array");
+  }
+  if (value.length > MAX_GPU_DESCRIPTORS) {
+    throw new GpuNativeDataError(
+      "gpus",
+      `array exceeds the ${String(MAX_GPU_DESCRIPTORS)}-entry safety limit`,
+    );
   }
   const ids = new Set<string>();
   const gpus = value.map((rawDescriptor, index) => {

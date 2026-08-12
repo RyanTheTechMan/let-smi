@@ -92,10 +92,19 @@ through a single-value slot. Slow consumers therefore receive the latest value
 instead of causing an unbounded queue. Nearby listeners for the same GPU and
 process option share a recent native poll.
 
-`SampleSubscription::next` waits on a condition variable. Cancellation and
-monitor shutdown close the slot and wake pending consumers. Provider access is
-serialized by the worker and provider-local locks. `close()` is idempotent,
-stops subscriptions, joins the sampler, then releases provider handles.
+`SampleSubscription::next` is a Rust `Future` backed by a stored waker; it does
+not occupy a libuv worker while waiting. Cancellation and monitor shutdown
+close the slot and wake pending consumers immediately. The command channel is
+bounded to 256 entries, each subscription permits one in-flight `next()`, and a
+monitor accepts at most 128 native subscriptions. Subscription storage is one
+coalescing snapshot, never an unbounded event queue.
+
+Provider access is serialized by the sampler and provider-local locks.
+`close()` is idempotent, stops subscriptions, and normally joins the sampler
+before releasing provider handles. It has a two-second exceptional bound: a
+vendor call that never returns is detached rather than followed by an
+unconditional join. A GC finalizer only requests nonblocking cancellation; the
+sampler retains provider ownership and performs shutdown on its own thread.
 
 ## NAPI-RS boundary
 
@@ -111,10 +120,13 @@ The boundary is deliberately data-oriented:
 - `subscribeGpu()` returns an object with `next()` and `cancel()`;
 - `vendorInfo()`, `diagnostics()`, `refresh()`, and `close()` are explicit.
 
-Blocking native work runs through NAPI-RS async tasks. TypeScript owns the public
-class hierarchy, validates every native payload, and implements the
-`AsyncIterable` with `try/finally` cancellation. Vendor subclasses use
-composition around the monitor client rather than mirroring provider classes.
+Open, one-shot sample, refresh, diagnostics, vendor information, and explicit
+close run on NAPI-RS's Tokio blocking runtime rather than the JavaScript thread
+or libuv worker pool. Subscription `next()` awaits the native waker-driven
+future directly. TypeScript owns the public class hierarchy, validates every
+native payload, and implements the `AsyncIterable` with `try/finally`
+cancellation. Vendor subclasses use composition around the monitor client
+rather than mirroring provider classes.
 
 ## Package layout
 

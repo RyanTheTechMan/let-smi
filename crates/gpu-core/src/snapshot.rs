@@ -86,13 +86,13 @@ pub struct PowerSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClockSnapshot {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "graphicsMHz", skip_serializing_if = "Option::is_none")]
     pub graphics_mhz: Option<Metric<f64>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "computeMHz", skip_serializing_if = "Option::is_none")]
     pub compute_mhz: Option<Metric<f64>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "memoryMHz", skip_serializing_if = "Option::is_none")]
     pub memory_mhz: Option<Metric<f64>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "videoMHz", skip_serializing_if = "Option::is_none")]
     pub video_mhz: Option<Metric<f64>>,
 }
 
@@ -287,5 +287,26 @@ mod tests {
             }
             Metric::Available(_) => panic!("unsupported metric must not be zero"),
         }
+    }
+
+    #[test]
+    fn clock_wire_names_preserve_the_public_mhz_acronym() {
+        let observation = MetricObservation {
+            device_id: "gpu".into(),
+            metric: MetricKey::ClockGraphicsMhz,
+            value: MetricValue::Number(1_500.0),
+            source: "mock".into(),
+            quality: MetricQuality::Direct,
+            sampled_at: 1,
+            interval_ms: None,
+            definition: None,
+        };
+        let merged = MergedMetrics {
+            selected: BTreeMap::from([(MetricKey::ClockGraphicsMhz, observation)]),
+            ..MergedMetrics::default()
+        };
+        let value = serde_json::to_value(build_snapshot(&gpu(), &merged, 1, None)).unwrap();
+        assert!(value["clocks"].get("graphicsMHz").is_some());
+        assert!(value["clocks"].get("graphicsMhz").is_none());
     }
 }

@@ -96,6 +96,25 @@ describe("GpuMonitor discovery", () => {
     await expect(
       GpuMonitor.open(null as unknown as MonitorOpenOptions),
     ).rejects.toBeInstanceOf(GpuInvalidArgumentError);
+    await expect(
+      GpuMonitor.open({ typo: true } as unknown as MonitorOpenOptions),
+    ).rejects.toBeInstanceOf(GpuInvalidArgumentError);
+    await expect(
+      GpuMonitor.open({
+        requiredProviders: ["nvml\nforged"],
+      }),
+    ).rejects.toBeInstanceOf(GpuInvalidArgumentError);
+    await api.close();
+  });
+
+  it("does not consume inherited monitor options", async () => {
+    const binding = new FakeBinding();
+    setNativeBindingForTesting(binding);
+    const inherited = Object.create({
+      includeSoftwareAdapters: true,
+    }) as MonitorOpenOptions;
+    const api = await GpuMonitor.open(inherited);
+    expect(binding.openCalls).toEqual([{}]);
     await api.close();
   });
 
@@ -107,6 +126,35 @@ describe("GpuMonitor discovery", () => {
     const first = await openFake(malformed);
     await expect(first.api.gpus()).rejects.toBeInstanceOf(GpuNativeDataError);
     await first.api.close();
+
+    const inheritedIdentity = new FakeMonitor();
+    inheritedIdentity.gpuDescriptors = [Object.create(identity()) as unknown];
+    const inherited = await openFake(inheritedIdentity);
+    await expect(inherited.api.gpus()).rejects.toBeInstanceOf(
+      GpuNativeDataError,
+    );
+    await inherited.api.close();
+
+    const oversizedIdentity = new FakeMonitor();
+    oversizedIdentity.gpuDescriptors = [
+      {
+        identity: {
+          ...identity(),
+          ...Object.fromEntries(
+            Array.from({ length: 257 }, (_, index) => [
+              `extra${String(index)}`,
+              index,
+            ]),
+          ),
+        },
+        capabilities: {},
+      },
+    ];
+    const oversized = await openFake(oversizedIdentity);
+    await expect(oversized.api.gpus()).rejects.toBeInstanceOf(
+      GpuNativeDataError,
+    );
+    await oversized.api.close();
 
     const duplicate = new FakeMonitor();
     duplicate.gpuDescriptors = [
@@ -181,6 +229,12 @@ describe("sampling and extensions", () => {
     expect(() =>
       gpu.sample({ includeProcesses: "yes" as unknown as boolean }),
     ).toThrow(GpuInvalidArgumentError);
+    expect(() => gpu.sample({ windowMs: 60_001 })).toThrow(
+      GpuInvalidArgumentError,
+    );
+    expect(() =>
+      gpu.sample({ typo: true } as unknown as Parameters<typeof gpu.sample>[0]),
+    ).toThrow(GpuInvalidArgumentError);
     await api.close();
   });
 
@@ -237,6 +291,27 @@ describe("sampling and extensions", () => {
         },
       ],
     });
+    const candidate = {
+      source: "mock",
+      score: 1,
+      selected: true,
+      quality: "direct",
+      sampledAt: 1_720_000_000_000,
+    };
+    const metric = {
+      metric: "utilization.overall",
+      candidates: [candidate],
+    };
+    monitor.diagnosticsValue = {
+      platform: "linux",
+      arch: "x64",
+      providers: [],
+      metricSelections: Array.from({ length: 631 }, (_, index) => ({
+        deviceId: `gpu-${String(index)}`,
+        metrics: Array.from({ length: 26 }, () => metric),
+      })),
+    };
+    await expect(api.diagnostics()).rejects.toBeInstanceOf(GpuNativeDataError);
     monitor.diagnosticsValue = {
       platform: "linux",
       arch: "x64",

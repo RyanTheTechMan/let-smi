@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -47,36 +47,46 @@ describe("native loader", () => {
       "let-smi-linux-arm64-gnu",
       "let-smi-linux-x64-gnu",
       "let-smi-linux-x64-musl",
-      "let-smi-win32-arm64-msvc",
       "let-smi-win32-x64-msvc",
     ]);
   });
 
-  it("loads an explicit native override without eager platform probing", async () => {
+  it("ignores generic native overrides and reports an actionable missing-package error", async () => {
     const loaderPath = fileURLToPath(new URL("../native.cjs", import.meta.url));
-    const fixtureDirectory = await mkdtemp(join(tmpdir(), "let-smi-loader-"));
+    const fixtureDirectory = await mkdtemp(join(tmpdir(), "let-smi-missing-"));
+    const isolatedLoader = join(fixtureDirectory, "native.cjs");
     const fakeNativePath = join(fixtureDirectory, "fake-native.cjs");
+    await writeFile(isolatedLoader, await readFile(loaderPath, "utf8"), "utf8");
     await writeFile(
       fakeNativePath,
-      "module.exports = { openMonitor() { return {}; } };\n",
+      "throw new Error('generic native override was executed');\n",
       "utf8",
     );
-    const localRequire = createRequire(import.meta.url);
-    const previousOverride = process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
     try {
-      process.env.NAPI_RS_NATIVE_LIBRARY_PATH = fakeNativePath;
-      Reflect.deleteProperty(localRequire.cache, loaderPath);
-      const binding = localRequire(loaderPath) as unknown;
-      expect(
-        typeof (binding as { readonly openMonitor?: unknown }).openMonitor,
-      ).toBe("function");
+      const message = await new Promise<string>((resolvePromise, reject) => {
+        const worker = new Worker(
+          `
+            const { parentPort, workerData } = require("node:worker_threads");
+            process.env.NAPI_RS_NATIVE_LIBRARY_PATH = workerData.fakeNativePath;
+            try {
+              require(workerData.loaderPath);
+              parentPort.postMessage("");
+            } catch (error) {
+              parentPort.postMessage(error instanceof Error ? error.message : String(error));
+            }
+          `,
+          {
+            eval: true,
+            workerData: { loaderPath: isolatedLoader, fakeNativePath },
+          },
+        );
+        worker.once("message", resolvePromise);
+        worker.once("error", reject);
+      });
+      expect(message).toContain("Unable to load the let-smi native addon");
+      expect(message).toContain("Reinstall with optional dependencies enabled");
+      expect(message).not.toContain("generic native override was executed");
     } finally {
-      Reflect.deleteProperty(localRequire.cache, loaderPath);
-      if (previousOverride === undefined) {
-        delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
-      } else {
-        process.env.NAPI_RS_NATIVE_LIBRARY_PATH = previousOverride;
-      }
       await rm(fixtureDirectory, { recursive: true, force: true });
     }
   });

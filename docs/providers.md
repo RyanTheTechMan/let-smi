@@ -7,18 +7,18 @@ from vendor name alone.
 
 ## Provider summary
 
-| Provider ID           | Platform            | Inventory                                                                                            | Telemetry                                                  | Loading behavior                                                |
-| --------------------- | ------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------- |
-| `windows-dxgi`        | Windows x64/ARM64   | adapter name, vendor/device/subsystem IDs, LUID, dedicated/shared totals, software-adapter filtering | none                                                       | Windows system API                                              |
-| `windows-pdh`         | Windows x64/ARM64   | contributes no duplicate inventory                                                                   | WDDM engine and overall utilization                        | persistent Windows PDH query; first reading unavailable         |
-| `nvml`                | Windows/Linux       | NVIDIA UUID, name, PCI, driver, architecture, VBIOS, VRAM                                            | NVIDIA utilization, memory, sensors, processes, extensions | dynamically loads host NVML; never requires `nvidia-smi`        |
-| `linux-sysfs`         | Linux x64/ARM64     | PCI display devices unioned with DRM card/render nodes, driver, memory, partitions                   | AMD sysfs plus attributable hwmon; Intel clocks/hwmon      | Rust filesystem access only; no `libdrm` hard link              |
-| `macos-metal`         | macOS x64/ARM64     | Metal name, registry ID, location/kind, GPU families, unified-memory topology                        | none                                                       | public OS framework                                             |
-| `apple-ioreport`      | Apple Silicon macOS | one Apple GPU observation used for correlation                                                       | active residency and GPU energy/power                      | private framework loaded by absolute OS path and symbol-checked |
-| `apple-smc`           | macOS x64/ARM64     | Metal-correlated sensor observation                                                                  | best-effort GPU die temperature                            | public IOKit calls to an undocumented AppleSMC protocol         |
-| `amd-adlx`            | Windows             | none                                                                                                 | none in this release                                       | system-DLL presence diagnostic only                             |
-| `level-zero`          | Windows             | none                                                                                                 | none in this release                                       | system-DLL presence diagnostic only                             |
-| `macos-ioaccelerator` | Intel-era macOS     | none                                                                                                 | none in the validated release                              | explicit unsupported diagnostic boundary                        |
+| Provider ID           | Platform            | Inventory                                                                                                          | Telemetry                                                  | Loading behavior                                                |
+| --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------- |
+| `windows-dxgi`        | Windows x64         | adapter name, vendor/device/subsystem IDs, LUID, PCI location, dedicated/shared totals, physical-adapter filtering | none                                                       | Windows DXGI and D3DKMT APIs                                    |
+| `windows-pdh`         | Windows x64         | contributes no duplicate inventory                                                                                 | WDDM engine and overall utilization                        | persistent bounded Windows PDH query; first reading unavailable |
+| `nvml`                | Windows/Linux       | NVIDIA UUID, name, PCI, driver, architecture, VBIOS, VRAM                                                          | NVIDIA utilization, memory, sensors, processes, extensions | dynamically loads host NVML; never requires `nvidia-smi`        |
+| `linux-sysfs`         | Linux x64/ARM64     | PCI display devices unioned with DRM card/render nodes, driver, memory, partitions                                 | AMD sysfs plus attributable hwmon; Intel clocks/hwmon      | Rust filesystem access only; no `libdrm` hard link              |
+| `macos-metal`         | macOS x64/ARM64     | Metal name, registry ID, location/kind, GPU families, unified-memory topology                                      | none                                                       | public OS framework                                             |
+| `apple-ioreport`      | Apple Silicon macOS | one Apple GPU observation used for correlation                                                                     | active residency and GPU energy/power                      | private framework loaded by absolute OS path and symbol-checked |
+| `apple-smc`           | macOS x64/ARM64     | Metal-correlated sensor observation                                                                                | best-effort GPU die temperature                            | public IOKit calls to an undocumented AppleSMC protocol         |
+| `amd-adlx`            | Windows x64         | none                                                                                                               | unimplemented                                              | secure system-DLL presence diagnostic only                      |
+| `level-zero`          | Windows x64         | none                                                                                                               | unimplemented                                              | secure system-DLL presence diagnostic only                      |
+| `macos-ioaccelerator` | Intel-era macOS     | none                                                                                                               | none in the validated release                              | explicit unsupported diagnostic boundary                        |
 
 ## Correlation and provider priority
 
@@ -52,15 +52,17 @@ candidate scores and the selected source after sampling.
 
 DXGI is the baseline and works without a vendor SDK. It enumerates
 `IDXGIAdapter1`, filters `DXGI_ADAPTER_FLAG_SOFTWARE` unless
-`includeSoftwareAdapters` is true, and records the adapter LUID. Dedicated and
-shared values come from `DXGI_ADAPTER_DESC1` and are static capacities; the
-provider deliberately does not misrepresent per-process DXGI budget APIs as
-system-wide used VRAM.
+`includeSoftwareAdapters` is true, and records the adapter LUID. D3DKMT enriches
+each LUID with PCI bus/device/function and hybrid integrated/discrete flags.
+Hybrid presentation paths carrying invalid D3DKMT PCI sentinels are excluded as
+non-physical duplicates. Dedicated and shared values come from
+`DXGI_ADAPTER_DESC1` and are static capacities; the provider deliberately does
+not misrepresent per-process DXGI budget APIs as system-wide used VRAM.
 
-Kind is `virtual` for a software adapter and otherwise remains `unknown` unless
-another correlated provider supplies a reliable hint. DXCore and PNP enrichment
-are not implemented yet, so LUID is the strongest generic Windows key in this
-release.
+Kind is `virtual` for software, `integrated`/`discrete` when D3DKMT reports a
+hybrid role, and otherwise `unknown`. DXCore and PNP enrichment are not
+implemented. PCI identity is preferred for cross-provider correlation and LUID
+remains the strongest Windows-specific key.
 
 ### PDH GPU Engine
 
@@ -68,21 +70,36 @@ One persistent English PDH query reads
 `\\GPU Engine(*)\\Utilization Percentage`. It correlates counter instances to a
 DXGI adapter by LUID, sums processes that reference the same physical engine,
 caps counter rounding noise at 100%, and takes the maximum engine as overall.
-The query is shared by the monitor. The first counter collection returns
+The query is shared by the monitor. One formatted-array collection is reused
+for adapters sampled in the same 10 ms batch so a hybrid sample has a common,
+meaningful interval. The first counter collection marks every PDH rate field
 `first-sample`; no zero is invented.
 
 The provider emits graphics, compute, copy, encoder, and decoder fields only
 when matching WDDM engine types appear in the counter data. PDH process IDs are
-not yet normalized into process snapshots.
+not yet normalized into process snapshots. Formatted arrays are limited to 16
+MiB and 65,536 items, use checked size arithmetic, validate the x64 ABI and
+embedded UTF-16 pointers, and allow at most three `PDH_MORE_DATA` retries.
 
 ### Optional Windows vendor runtimes
 
-NVML is fully implemented and dynamically loaded. ADLX and Level Zero are
-currently secure `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)` presence
-probes so diagnostics distinguish a missing runtime from an unimplemented
-adapter. They advertise no metric capabilities and never fabricate AMD/Intel
-sensor data. ADLX SDK redistribution and a minimal Sysman ABI both require
-additional review before telemetry is enabled.
+NVML is fully implemented and dynamically loaded on Windows only from absolute
+paths derived from `GetSystemDirectoryW` and
+`SHGetKnownFolderPath(FOLDERID_ProgramFiles)`. Each candidate is first loaded
+with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`; the same
+absolute path is then passed to `nvml-wrapper`. Current directory, `PATH`,
+environment-selected driver paths, and process-global `SetDllDirectoryW` are
+not used.
+
+ADLX and Level Zero are secure
+`LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)` presence probes only.
+Diagnostics always report them as nonfunctional: `unsupported` when the DLL is
+detected and `driver-library-missing` otherwise. They advertise no metric
+capabilities and never fabricate AMD/Intel sensor data. No AMD hardware or ADLX
+telemetry was validated. Level Zero Sysman is not implemented.
+
+Windows ARM64 is not a supported or packaged target in this release. The
+Windows provider behavior described here is x64-only.
 
 ## Linux
 

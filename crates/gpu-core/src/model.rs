@@ -574,7 +574,7 @@ pub struct CanonicalGpu {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SampleRequest {
     #[serde(default = "default_sample_window_ms")]
     pub window_ms: u64,
@@ -610,7 +610,9 @@ impl SampleRequest {
 pub struct ProviderSample {
     pub metrics: Vec<MetricObservation>,
     pub unavailable: Vec<UnavailableObservation>,
-    pub processes: Vec<GpuProcessSnapshot>,
+    /// `Some([])` means a supported process query succeeded and found no
+    /// processes. `None` means the provider did not supply process data.
+    pub processes: Option<Vec<GpuProcessSnapshot>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

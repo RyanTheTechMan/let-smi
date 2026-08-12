@@ -74,6 +74,11 @@ mod implementation {
 
     const PROVIDER_ID: &str = "nvml";
     const PROCESS_NAME_BUFFER_BYTES: usize = 1_024;
+    const MAX_NVML_DEVICES: u32 = 256;
+    const MAX_NVML_FANS: u32 = 64;
+    const MAX_NVML_PROCESSES: usize = 16_384;
+    const MAX_NVML_ENCODER_SESSIONS: usize = 4_096;
+    const MAX_INVENTORY_FAILURE_DETAILS: usize = 16;
 
     #[derive(Debug, Clone)]
     struct DeviceRecord {
@@ -95,6 +100,7 @@ mod implementation {
         nvml_version: Option<String>,
         driver_version: Option<String>,
         initialization_failure: Option<Failure>,
+        runtime_message: Option<String>,
         inventory_message: Option<String>,
         records: BTreeMap<String, DeviceRecord>,
         closed: bool,
@@ -102,8 +108,8 @@ mod implementation {
 
     impl State {
         fn initialize() -> Self {
-            match Nvml::init() {
-                Ok(nvml) => {
+            match initialize_runtime() {
+                Ok((nvml, runtime_message)) => {
                     let nvml_version = nvml.sys_nvml_version().ok();
                     let driver_version = nvml.sys_driver_version().ok();
                     Self {
@@ -111,6 +117,7 @@ mod implementation {
                         nvml_version,
                         driver_version,
                         initialization_failure: None,
+                        runtime_message,
                         inventory_message: None,
                         records: BTreeMap::new(),
                         closed: false,
@@ -120,16 +127,34 @@ mod implementation {
                     nvml: None,
                     nvml_version: None,
                     driver_version: None,
-                    initialization_failure: Some(Failure {
-                        reason: unavailable_reason(&error),
-                        message: format!("could not initialize NVML: {error}"),
-                    }),
+                    initialization_failure: Some(error),
+                    runtime_message: None,
                     inventory_message: None,
                     records: BTreeMap::new(),
                     closed: false,
                 },
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn initialize_runtime() -> std::result::Result<(Nvml, Option<String>), Failure> {
+        Nvml::init()
+            .map(|nvml| (nvml, None))
+            .map_err(|error| Failure {
+                reason: unavailable_reason(&error),
+                message: format!("could not initialize NVML: {error}"),
+            })
+    }
+
+    #[cfg(windows)]
+    fn initialize_runtime() -> std::result::Result<(Nvml, Option<String>), Failure> {
+        crate::providers::windows::nvml_loader::initialize()
+            .map(|(nvml, message)| (nvml, Some(message)))
+            .map_err(|error| Failure {
+                reason: error.reason,
+                message: error.message,
+            })
     }
 
     /// A single dynamically-loaded NVML runtime shared by all NVIDIA devices in
@@ -202,16 +227,27 @@ mod implementation {
                     return Ok(Vec::new());
                 }
             };
+            if device_count > MAX_NVML_DEVICES {
+                state.records.clear();
+                state.inventory_message = Some(format!(
+                    "NVML reported an unreasonable device count ({device_count}); the safety limit is {MAX_NVML_DEVICES}"
+                ));
+                return Ok(Vec::new());
+            }
 
             let mut observations = Vec::with_capacity(device_count as usize);
             let mut records = BTreeMap::new();
             let mut skipped = Vec::new();
+            let mut skipped_count = 0_usize;
 
             for index in 0..device_count {
                 let device = match nvml.device_by_index(index) {
                     Ok(value) => value,
                     Err(error) => {
-                        skipped.push(format!("index {index}: {error}"));
+                        skipped_count = skipped_count.saturating_add(1);
+                        if skipped.len() < MAX_INVENTORY_FAILURE_DETAILS {
+                            skipped.push(format!("index {index}: {error}"));
+                        }
                         continue;
                     }
                 };
@@ -286,10 +322,10 @@ mod implementation {
             }
 
             state.records = records;
-            state.inventory_message = (!skipped.is_empty()).then(|| {
+            state.inventory_message = (skipped_count > 0).then(|| {
                 format!(
                     "NVML skipped {} inaccessible device(s): {}",
-                    skipped.len(),
+                    skipped_count,
                     skipped.join("; ")
                 )
             });
@@ -299,6 +335,12 @@ mod implementation {
         fn diagnostic(&self) -> ProviderDiagnostic {
             let state = self.state.lock();
             let failure = state.initialization_failure.as_ref();
+            let runtime_message = match (&state.runtime_message, &state.inventory_message) {
+                (Some(runtime), Some(inventory)) => Some(format!("{runtime}; {inventory}")),
+                (Some(runtime), None) => Some(runtime.clone()),
+                (None, Some(inventory)) => Some(inventory.clone()),
+                (None, None) => None,
+            };
             ProviderDiagnostic {
                 id: PROVIDER_ID.into(),
                 loaded: state.nvml.is_some() && !state.closed,
@@ -311,7 +353,7 @@ mod implementation {
                 }),
                 message: failure
                     .map(|value| value.message.clone())
-                    .or_else(|| state.inventory_message.clone())
+                    .or(runtime_message)
                     .or_else(|| state.closed.then(|| "NVML provider is shut down".into())),
             }
         }
@@ -506,7 +548,8 @@ mod implementation {
         if average_fan_reading(device, |device, index| device.fan_speed_rpm(index)).is_ok() {
             capabilities.insert(MetricKey::FanRpm);
         }
-        if device.running_compute_processes().is_ok() || device.running_graphics_processes().is_ok()
+        if device.running_compute_processes_count().is_ok()
+            || device.running_graphics_processes_count().is_ok()
         {
             capabilities.insert(MetricKey::Processes);
         }
@@ -753,14 +796,17 @@ mod implementation {
 
         if request.include_processes && capabilities.supports(MetricKey::Processes) {
             match collect_processes(nvml, device, sampled_at) {
-                Ok(processes) => sample.processes = processes,
-                Err(error) => push_nvml_error(
+                Ok(processes) => sample.processes = Some(processes),
+                Err(FieldError::Nvml(error)) => push_nvml_error(
                     sample,
                     canonical,
                     MetricKey::Processes,
                     "process accounting",
                     &error,
                 ),
+                Err(FieldError::InvalidValue(message)) => {
+                    push_invalid_value(sample, canonical, MetricKey::Processes, message)
+                }
             }
         }
     }
@@ -897,6 +943,11 @@ mod implementation {
             Ok(value) => (value, None),
             Err(error) => (1, Some(error)),
         };
+        if fan_count > MAX_NVML_FANS {
+            return Err(FieldError::InvalidValue(format!(
+                "NVML reported an unreasonable fan count ({fan_count}); the safety limit is {MAX_NVML_FANS}"
+            )));
+        }
         let mut values = Vec::with_capacity(fan_count as usize);
         for index in 0..fan_count {
             match read(device, index) {
@@ -935,14 +986,35 @@ mod implementation {
         nvml: &Nvml,
         device: &Device<'_>,
         sampled_at: u64,
-    ) -> std::result::Result<Vec<GpuProcessSnapshot>, NvmlError> {
+    ) -> std::result::Result<Vec<GpuProcessSnapshot>, FieldError> {
         let mut processes: BTreeMap<u32, Option<u64>> = BTreeMap::new();
         let mut successful_queries = 0_u8;
         let mut last_error = None;
-        for result in [
-            device.running_compute_processes(),
-            device.running_graphics_processes(),
-        ] {
+        for graphics in [false, true] {
+            let count = if graphics {
+                device.running_graphics_processes_count()
+            } else {
+                device.running_compute_processes_count()
+            };
+            let count = match count {
+                Ok(value) => usize::try_from(value).map_err(|_| {
+                    FieldError::InvalidValue("NVML process count does not fit usize".into())
+                })?,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            if count > MAX_NVML_PROCESSES {
+                return Err(FieldError::InvalidValue(format!(
+                    "NVML reported an unreasonable process count ({count}); the safety limit is {MAX_NVML_PROCESSES}"
+                )));
+            }
+            let result = if graphics {
+                device.running_graphics_processes()
+            } else {
+                device.running_compute_processes()
+            };
             match result {
                 Ok(values) => {
                     successful_queries += 1;
@@ -952,7 +1024,9 @@ mod implementation {
             }
         }
         if successful_queries == 0 {
-            return Err(last_error.unwrap_or(NvmlError::NotSupported));
+            return Err(FieldError::Nvml(
+                last_error.unwrap_or(NvmlError::NotSupported),
+            ));
         }
 
         Ok(processes
@@ -984,6 +1058,9 @@ mod implementation {
                 UsedGpuMemory::Used(value) => Some(value),
                 UsedGpuMemory::Unavailable => None,
             };
+            if !destination.contains_key(&process.pid) && destination.len() >= MAX_NVML_PROCESSES {
+                continue;
+            }
             destination
                 .entry(process.pid)
                 .and_modify(|current| {
@@ -1093,7 +1170,9 @@ mod implementation {
         if let Ok(value) = device.current_pcie_link_width() {
             info.insert("pcieWidth".into(), metric_json(value, sampled_at));
         }
-        if let Ok(values) = device.encoder_sessions() {
+        if let Ok(mut values) = device.encoder_sessions() {
+            let truncated = values.len() > MAX_NVML_ENCODER_SESSIONS;
+            values.truncate(MAX_NVML_ENCODER_SESSIONS);
             info.insert(
                 "encoderSessions".into(),
                 Value::Array(
@@ -1111,6 +1190,9 @@ mod implementation {
                         .collect(),
                 ),
             );
+            if truncated {
+                info.insert("encoderSessionsTruncated".into(), Value::Bool(true));
+            }
         }
         let mut thresholds = Map::new();
         for (threshold, name) in [

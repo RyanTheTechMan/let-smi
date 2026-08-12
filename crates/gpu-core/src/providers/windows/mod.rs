@@ -1,4 +1,5 @@
 mod dxgi;
+pub(crate) mod nvml_loader;
 mod pdh;
 mod runtime_probe;
 

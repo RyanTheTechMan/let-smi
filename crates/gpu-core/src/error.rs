@@ -17,6 +17,9 @@ pub enum GpuError {
     #[error("sample stream is closed")]
     StreamClosed,
 
+    #[error("native sampler backpressure: {0}")]
+    Backpressure(String),
+
     #[error("provider `{provider}` failed ({reason:?}): {message}")]
     Provider {
         provider: String,

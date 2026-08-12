@@ -346,27 +346,40 @@ fn merge_macos(cluster: &[&DeviceObservation]) -> Option<MacosIdentity> {
 }
 
 fn merge_memory(cluster: &[&DeviceObservation]) -> StaticMemoryInfo {
-    let topology = cluster
+    let dedicated_total_bytes = cluster
         .iter()
-        .find_map(|observation| {
-            (observation.memory.topology != MemoryTopology::Unknown)
-                .then_some(observation.memory.topology)
-        })
-        .unwrap_or_default();
+        .filter_map(|observation| observation.memory.dedicated_total_bytes)
+        .max();
+    let shared_total_bytes = cluster
+        .iter()
+        .filter_map(|observation| observation.memory.shared_total_bytes)
+        .max();
+    let unified_total_bytes = cluster
+        .iter()
+        .filter_map(|observation| observation.memory.unified_total_bytes)
+        .max();
+    let topology = match (
+        dedicated_total_bytes.is_some_and(|bytes| bytes > 0),
+        shared_total_bytes.is_some_and(|bytes| bytes > 0),
+        unified_total_bytes.is_some_and(|bytes| bytes > 0),
+    ) {
+        (true, false, false) => MemoryTopology::Dedicated,
+        (false, true, false) => MemoryTopology::Shared,
+        (false, false, true) => MemoryTopology::Unified,
+        (false, false, false) => cluster
+            .iter()
+            .find_map(|observation| {
+                (observation.memory.topology != MemoryTopology::Unknown)
+                    .then_some(observation.memory.topology)
+            })
+            .unwrap_or_default(),
+        _ => MemoryTopology::Mixed,
+    };
     StaticMemoryInfo {
         topology,
-        dedicated_total_bytes: cluster
-            .iter()
-            .filter_map(|observation| observation.memory.dedicated_total_bytes)
-            .max(),
-        shared_total_bytes: cluster
-            .iter()
-            .filter_map(|observation| observation.memory.shared_total_bytes)
-            .max(),
-        unified_total_bytes: cluster
-            .iter()
-            .filter_map(|observation| observation.memory.unified_total_bytes)
-            .max(),
+        dedicated_total_bytes,
+        shared_total_bytes,
+        unified_total_bytes,
     }
 }
 
@@ -499,6 +512,30 @@ mod tests {
                 .capability_set
                 .supports(MetricKey::UtilizationOverall)
         );
+    }
+
+    #[test]
+    fn derives_static_memory_topology_from_every_correlated_provider() {
+        let mut generic = observation("windows-dxgi", "luid");
+        generic.memory = StaticMemoryInfo {
+            topology: MemoryTopology::Mixed,
+            dedicated_total_bytes: Some(32),
+            shared_total_bytes: Some(64),
+            unified_total_bytes: None,
+        };
+        let mut vendor = observation("nvml", "uuid");
+        vendor.identity_priority = 100;
+        vendor.memory = StaticMemoryInfo {
+            topology: MemoryTopology::Dedicated,
+            dedicated_total_bytes: Some(48),
+            shared_total_bytes: None,
+            unified_total_bytes: None,
+        };
+
+        let gpu = correlate(vec![vendor, generic]).pop().expect("merged GPU");
+        assert_eq!(gpu.memory.topology, MemoryTopology::Mixed);
+        assert_eq!(gpu.memory.dedicated_total_bytes, Some(48));
+        assert_eq!(gpu.memory.shared_total_bytes, Some(64));
     }
 
     #[test]

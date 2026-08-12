@@ -24,11 +24,16 @@ nvml-wrapper = { version = "=0.12.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = [
+  "Wdk_Graphics_Direct3D",
   "Win32_Foundation",
+  "Win32_Graphics_Gdi",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
+  "Win32_System_Com",
   "Win32_System_LibraryLoader",
   "Win32_System_Performance",
+  "Win32_System_SystemInformation",
+  "Win32_UI_Shell",
 ] }
 
 [dev-dependencies]

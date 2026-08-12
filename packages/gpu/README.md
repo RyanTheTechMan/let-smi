@@ -49,14 +49,15 @@ if (metric.available) {
 
 ## Current provider coverage
 
-| Platform            | Inventory                                  | `utilization.overall` and live telemetry                                                                                                   |
-| ------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Windows             | DXGI for NVIDIA/AMD/Intel/unknown adapters | PDH WDDM engine utilization; dynamically loaded NVML adds NVIDIA memory, sensors, clocks, fans, processes, and extensions                  |
-| Linux               | PCI + DRM sysfs on x64/ARM64               | NVML for NVIDIA; AMD kernel busy/memory plus hwmon sensors; Intel i915/Xe clocks and sensors (device-wide utilization remains unavailable) |
-| macOS Apple Silicon | Metal                                      | dynamically loaded IOReport active residency/power plus AppleSMC temperature                                                               |
-| Intel-era macOS     | Metal best effort                          | AppleSMC temperature only when safely correlatable; IOAccelerator utilization is not enabled without hardware validation                   |
+| Platform            | Inventory                                                          | `utilization.overall` and live telemetry                                                                                                   |
+| ------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Windows x64         | DXGI/D3DKMT for NVIDIA/Intel/unknown; AMD generic path is untested | PDH WDDM engine utilization; securely loaded NVML adds NVIDIA memory, sensors, clocks, fans, processes, and extensions                     |
+| Linux               | PCI + DRM sysfs on x64/ARM64                                       | NVML for NVIDIA; AMD kernel busy/memory plus hwmon sensors; Intel i915/Xe clocks and sensors (device-wide utilization remains unavailable) |
+| macOS Apple Silicon | Metal                                                              | dynamically loaded IOReport active residency/power plus AppleSMC temperature                                                               |
+| Intel-era macOS     | Metal best effort                                                  | AppleSMC temperature only when safely correlatable; IOAccelerator utilization is not enabled without hardware validation                   |
 
-ADLX and Level Zero are diagnostic-only runtime boundaries in this release.
+ADLX and Level Zero are unimplemented, diagnostic-only runtime boundaries in
+this release. Windows ARM64 is not a supported package target.
 Missing libraries do not stop the generic providers. No runtime provider invokes
 `nvidia-smi`, `amd-smi`, `intel_gpu_top`, `powermetrics`, or another executable.
 
@@ -84,7 +85,8 @@ Use `gpu.supports("temperatures.coreCelsius")` before requesting UI for an
 optional metric. `await monitor.diagnostics()` reports provider load status and
 field-level metric-selection candidates without exposing unrelated system
 information. Always call `await monitor.close()` during shutdown; closing more
-than once is safe.
+than once is safe. Pending stream reads wait asynchronously without consuming a
+libuv worker, and explicit close has a bounded exceptional path.
 
 Apple IOReport/SMC telemetry is best effort, enabled by default, and isolated
 from Metal inventory. Pass `{ enableApplePrivateTelemetry: false }` to disable

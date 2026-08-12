@@ -101,6 +101,15 @@ export const GPU_METRIC_NAMES = [
 ] as const satisfies readonly GpuMetricName[];
 
 const GPU_METRIC_NAME_SET = new Set<string>(GPU_METRIC_NAMES);
+const MAX_NATIVE_STRING_LENGTH = 65_536;
+const MAX_PROCESSES = 16_384;
+const MAX_PROVIDER_DIAGNOSTICS = 32;
+const MAX_DIAGNOSTIC_WARNINGS = 128;
+const MAX_METRIC_SELECTIONS = 16_384;
+const MAX_SELECTION_CANDIDATES = 32;
+const MAX_REQUIRED_PROVIDERS = 16;
+const MAX_PROVIDER_ID_LENGTH = 64;
+const MAX_RECORD_KEYS = 256;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -110,11 +119,31 @@ function record(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new GpuNativeDataError(path, "expected an object");
   }
-  return value;
+  const keys = Object.keys(value);
+  if (keys.length > MAX_RECORD_KEYS) {
+    throw new GpuNativeDataError(
+      path,
+      `object exceeds the ${String(MAX_RECORD_KEYS)}-property safety limit`,
+    );
+  }
+  return copyOwnProperties(value, keys);
+}
+
+function copyOwnProperties(
+  value: Record<string, unknown>,
+  keys = Object.keys(value),
+): Record<string, unknown> {
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const key of keys) result[key] = value[key];
+  return result;
 }
 
 function nonEmptyString(value: unknown, path: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > MAX_NATIVE_STRING_LENGTH
+  ) {
     throw new GpuNativeDataError(path, "expected a non-empty string");
   }
   return value;
@@ -128,6 +157,7 @@ function optionalString(
   if (value === undefined) return undefined;
   if (
     typeof value !== "string" ||
+    value.length > MAX_NATIVE_STRING_LENGTH ||
     (!options.allowEmpty && value.trim().length === 0)
   ) {
     throw new GpuNativeDataError(path, "expected a string");
@@ -185,14 +215,29 @@ function boolean(value: unknown, path: string): boolean {
 }
 
 function stringArray(value: unknown, path: string): readonly string[] {
-  if (!Array.isArray(value)) {
-    throw new GpuNativeDataError(path, "expected an array");
-  }
+  const values = boundedArray(value, path, 256);
   return Object.freeze(
-    value.map((entry, index) =>
+    values.map((entry, index) =>
       nonEmptyString(entry, `${path}[${String(index)}]`),
     ),
   );
+}
+
+function boundedArray(
+  value: unknown,
+  path: string,
+  maximumLength: number,
+): readonly unknown[] {
+  if (!Array.isArray(value)) {
+    throw new GpuNativeDataError(path, "expected an array");
+  }
+  if (value.length > maximumLength) {
+    throw new GpuNativeDataError(
+      path,
+      `array exceeds the ${String(maximumLength)}-entry safety limit`,
+    );
+  }
+  return value;
 }
 
 function optionalObject(
@@ -397,12 +442,14 @@ export function parseGpuCapabilities(
 
   const input = record(value, path);
   const rawMetrics = input.metrics ?? [];
-  if (!Array.isArray(rawMetrics)) {
-    throw new GpuNativeDataError(`${path}.metrics`, "expected an array");
-  }
+  const metricValues = boundedArray(
+    rawMetrics,
+    `${path}.metrics`,
+    GPU_METRIC_NAMES.length,
+  );
   const metrics: GpuMetricName[] = [];
   const seen = new Set<string>();
-  for (const [index, rawMetric] of rawMetrics.entries()) {
+  for (const [index, rawMetric] of metricValues.entries()) {
     const metric = nonEmptyString(
       rawMetric,
       `${path}.metrics[${String(index)}]`,
@@ -777,11 +824,13 @@ export function parseGpuSnapshot(
   const input = record(value, path);
   let processes: readonly GpuProcessSnapshot[] | undefined;
   if (input.processes !== undefined) {
-    if (!Array.isArray(input.processes)) {
-      throw new GpuNativeDataError(`${path}.processes`, "expected an array");
-    }
+    const processValues = boundedArray(
+      input.processes,
+      `${path}.processes`,
+      MAX_PROCESSES,
+    );
     processes = Object.freeze(
-      input.processes.map((process, index) =>
+      processValues.map((process, index) =>
         parseProcess(process, `${path}.processes[${String(index)}]`),
       ),
     );
@@ -869,14 +918,16 @@ function parseMetricSelection(
   if (!GPU_METRIC_NAME_SET.has(metric)) {
     throw new GpuNativeDataError(`${path}.metric`, `unknown metric ${metric}`);
   }
-  if (!Array.isArray(input.candidates)) {
-    throw new GpuNativeDataError(`${path}.candidates`, "expected an array");
-  }
+  const candidates = boundedArray(
+    input.candidates,
+    `${path}.candidates`,
+    MAX_SELECTION_CANDIDATES,
+  );
   return Object.freeze({
     deviceId,
     metric: metric as GpuMetricName,
     candidates: Object.freeze(
-      input.candidates.map((candidate, index) =>
+      candidates.map((candidate, index) =>
         parseMetricSelectionCandidate(
           candidate,
           `${path}.candidates[${String(index)}]`,
@@ -891,26 +942,41 @@ export function parseGpuDiagnostics(
   path = "diagnostics",
 ): GpuDiagnostics {
   const input = record(value, path);
-  if (!Array.isArray(input.providers)) {
-    throw new GpuNativeDataError(`${path}.providers`, "expected an array");
-  }
+  const providers = boundedArray(
+    input.providers,
+    `${path}.providers`,
+    MAX_PROVIDER_DIAGNOSTICS,
+  );
   const warnings =
     input.warnings === undefined
       ? Object.freeze([])
-      : stringArray(input.warnings, `${path}.warnings`);
+      : Object.freeze(
+          boundedArray(
+            input.warnings,
+            `${path}.warnings`,
+            MAX_DIAGNOSTIC_WARNINGS,
+          ).map((warning, index) =>
+            nonEmptyString(warning, `${path}.warnings[${String(index)}]`),
+          ),
+        );
   let metricSelections: readonly MetricSelectionDiagnostics[] | undefined;
   if (input.metricSelections !== undefined) {
-    if (!Array.isArray(input.metricSelections)) {
-      throw new GpuNativeDataError(
-        `${path}.metricSelections`,
-        "expected an array",
-      );
-    }
+    const selections = boundedArray(
+      input.metricSelections,
+      `${path}.metricSelections`,
+      MAX_METRIC_SELECTIONS,
+    );
     const flattenedSelections: MetricSelectionDiagnostics[] = [];
-    for (const [
-      selectionIndex,
-      selection,
-    ] of input.metricSelections.entries()) {
+    const appendSelection = (selection: MetricSelectionDiagnostics): void => {
+      if (flattenedSelections.length >= MAX_METRIC_SELECTIONS) {
+        throw new GpuNativeDataError(
+          `${path}.metricSelections`,
+          `flattened selections exceed the ${String(MAX_METRIC_SELECTIONS)}-entry safety limit`,
+        );
+      }
+      flattenedSelections.push(selection);
+    };
+    for (const [selectionIndex, selection] of selections.entries()) {
       const selectionPath = `${path}.metricSelections[${String(selectionIndex)}]`;
       const selectionInput = record(selection, selectionPath);
       const deviceId = nonEmptyString(
@@ -918,19 +984,18 @@ export function parseGpuDiagnostics(
         `${selectionPath}.deviceId`,
       );
       if (selectionInput.metrics === undefined) {
-        flattenedSelections.push(
+        appendSelection(
           parseMetricSelection(selectionInput, deviceId, selectionPath),
         );
         continue;
       }
-      if (!Array.isArray(selectionInput.metrics)) {
-        throw new GpuNativeDataError(
-          `${selectionPath}.metrics`,
-          "expected an array",
-        );
-      }
-      for (const [metricIndex, metric] of selectionInput.metrics.entries()) {
-        flattenedSelections.push(
+      const metrics = boundedArray(
+        selectionInput.metrics,
+        `${selectionPath}.metrics`,
+        GPU_METRIC_NAMES.length,
+      );
+      for (const [metricIndex, metric] of metrics.entries()) {
+        appendSelection(
           parseMetricSelection(
             metric,
             deviceId,
@@ -945,7 +1010,7 @@ export function parseGpuDiagnostics(
     platform: nonEmptyString(input.platform, `${path}.platform`),
     arch: nonEmptyString(input.arch, `${path}.arch`),
     providers: Object.freeze(
-      input.providers.map((provider, index) =>
+      providers.map((provider, index) =>
         parseProviderDiagnostics(
           provider,
           `${path}.providers[${String(index)}]`,
@@ -960,25 +1025,42 @@ export function parseGpuDiagnostics(
 function positiveIntegerOption(
   value: unknown,
   name: string,
+  minimum: number,
+  maximum: number,
 ): number | undefined {
   if (value === undefined) return undefined;
   if (
     typeof value !== "number" ||
     !Number.isSafeInteger(value) ||
-    value <= 0 ||
-    value > 0x7fff_ffff
+    value < minimum ||
+    value > maximum
   ) {
     throw new GpuInvalidArgumentError(
-      `${name} must be a positive 32-bit integer`,
+      `${name} must be an integer between ${String(minimum)} and ${String(maximum)}`,
     );
   }
   return value;
 }
 
-function assertOptionsObject(value: unknown, name: string): void {
-  if (value !== undefined && !isRecord(value)) {
+function optionsRecord(
+  value: unknown,
+  name: string,
+  allowedKeys: ReadonlySet<string>,
+): Record<string, unknown> {
+  if (value === undefined)
+    return Object.create(null) as Record<string, unknown>;
+  if (!isRecord(value)) {
     throw new GpuInvalidArgumentError(`${name} must be an object`);
   }
+  const keys = Object.keys(value);
+  const unknown = keys.find((key) => !allowedKeys.has(key));
+  if (unknown !== undefined) {
+    throw new GpuInvalidArgumentError(
+      `${name} contains unknown option ${unknown}`,
+    );
+  }
+  const input = copyOwnProperties(value, keys);
+  return input;
 }
 
 export function normalizeOpenOptions(options: MonitorOpenOptions | undefined): {
@@ -986,17 +1068,34 @@ export function normalizeOpenOptions(options: MonitorOpenOptions | undefined): {
   readonly enableApplePrivateTelemetry?: boolean;
   readonly includeSoftwareAdapters?: boolean;
 } {
-  assertOptionsObject(options, "monitor options");
+  const input = optionsRecord(
+    options,
+    "monitor options",
+    new Set([
+      "requiredProviders",
+      "enableApplePrivateTelemetry",
+      "includeSoftwareAdapters",
+    ]),
+  );
   const requiredProviders: string[] = [];
-  if (options?.requiredProviders !== undefined) {
-    if (!Array.isArray(options.requiredProviders)) {
+  if (input.requiredProviders !== undefined) {
+    if (!Array.isArray(input.requiredProviders)) {
       throw new GpuInvalidArgumentError("requiredProviders must be an array");
     }
+    if (input.requiredProviders.length > MAX_REQUIRED_PROVIDERS) {
+      throw new GpuInvalidArgumentError(
+        `requiredProviders exceeds the ${String(MAX_REQUIRED_PROVIDERS)}-entry safety limit`,
+      );
+    }
     const seen = new Set<string>();
-    for (const provider of options.requiredProviders) {
-      if (typeof provider !== "string" || provider.trim().length === 0) {
+    for (const provider of input.requiredProviders) {
+      if (
+        typeof provider !== "string" ||
+        provider.length > MAX_PROVIDER_ID_LENGTH ||
+        !/^[a-z0-9][a-z0-9._-]*$/u.test(provider)
+      ) {
         throw new GpuInvalidArgumentError(
-          "requiredProviders must contain non-empty strings",
+          "requiredProviders contains an invalid provider identifier",
         );
       }
       if (!seen.has(provider)) {
@@ -1006,15 +1105,15 @@ export function normalizeOpenOptions(options: MonitorOpenOptions | undefined): {
     }
   }
   const enableApplePrivateTelemetry = optionalBooleanOption(
-    options?.enableApplePrivateTelemetry,
+    input.enableApplePrivateTelemetry,
     "enableApplePrivateTelemetry",
   );
   const includeSoftwareAdapters = optionalBooleanOption(
-    options?.includeSoftwareAdapters,
+    input.includeSoftwareAdapters,
     "includeSoftwareAdapters",
   );
   return {
-    ...(options?.requiredProviders === undefined ? {} : { requiredProviders }),
+    ...(input.requiredProviders === undefined ? {} : { requiredProviders }),
     ...(enableApplePrivateTelemetry === undefined
       ? {}
       : { enableApplePrivateTelemetry }),
@@ -1039,10 +1138,14 @@ export function normalizeSampleOptions(options: SampleOptions | undefined): {
   readonly windowMs?: number;
   readonly includeProcesses?: boolean;
 } {
-  assertOptionsObject(options, "sample options");
-  const windowMs = positiveIntegerOption(options?.windowMs, "windowMs");
+  const input = optionsRecord(
+    options,
+    "sample options",
+    new Set(["windowMs", "includeProcesses"]),
+  );
+  const windowMs = positiveIntegerOption(input.windowMs, "windowMs", 1, 60_000);
   const includeProcesses = optionalBooleanOption(
-    options?.includeProcesses,
+    input.includeProcesses,
     "includeProcesses",
   );
   return {
@@ -1059,23 +1162,40 @@ export interface NormalizedWatchOptions {
   readonly signal?: AbortSignal;
 }
 
+function isAbortSignal(value: unknown): value is AbortSignal {
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    const candidate = value as Partial<AbortSignal>;
+    return (
+      typeof candidate.aborted === "boolean" &&
+      typeof candidate.addEventListener === "function" &&
+      typeof candidate.removeEventListener === "function"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function normalizeWatchOptions(
   options: WatchOptions | undefined,
 ): NormalizedWatchOptions {
-  assertOptionsObject(options, "watch options");
-  const intervalMs = positiveIntegerOption(options?.intervalMs, "intervalMs");
+  const input = optionsRecord(
+    options,
+    "watch options",
+    new Set(["intervalMs", "includeProcesses", "signal"]),
+  );
+  const intervalMs = positiveIntegerOption(
+    input.intervalMs,
+    "intervalMs",
+    50,
+    60_000,
+  );
   const includeProcesses = optionalBooleanOption(
-    options?.includeProcesses,
+    input.includeProcesses,
     "includeProcesses",
   );
-  const signal = options?.signal;
-  if (
-    signal !== undefined &&
-    (typeof signal !== "object" ||
-      typeof signal.aborted !== "boolean" ||
-      typeof signal.addEventListener !== "function" ||
-      typeof signal.removeEventListener !== "function")
-  ) {
+  const signal = input.signal;
+  if (signal !== undefined && !isAbortSignal(signal)) {
     throw new GpuInvalidArgumentError("signal must be an AbortSignal");
   }
   return {

@@ -6,6 +6,9 @@
   "engines": {
     "node": ">=20"
   },
+  "prettier": {
+    "endOfLine": "auto"
+  },
   "scripts": {
     "build": "pnpm --filter let-smi build",
     "build:native": "pnpm native:build:release",
@@ -21,11 +24,13 @@
     "native:prepublish": "pnpm --dir packages/gpu native:prepublish",
     "native:prepublish:dry": "pnpm --dir packages/gpu native:prepublish --dry-run",
     "native:test-loader": "node scripts/test-native-loader.mjs",
+    "test:windows-hardware": "node scripts/test-windows-process-exit.mjs",
     "native:validate-artifact": "node scripts/validate-native-artifact.mjs",
     "typecheck": "pnpm --filter let-smi typecheck",
     "test": "pnpm --filter let-smi test",
     "rust:check": "cargo test --workspace --all-targets --locked && cargo clippy --workspace --all-targets --locked -- -D warnings",
     "pack:check": "pnpm --filter let-smi pack:check",
+    "pack:test-local": "node scripts/test-packed-package.mjs",
     "subprocess:check": "node scripts/check-no-subprocess.mjs"
   },
   "devDependencies": {

@@ -1,13 +1,17 @@
 "use strict";
 
 const { existsSync } = require("node:fs");
-const { isAbsolute, join, resolve } = require("node:path");
+const { join } = require("node:path");
 
 const BINARY_BASENAME = "let-smi";
+const MAX_LOADER_ERROR_LENGTH = 1_024;
 
 function safeErrorMessage(error) {
-  if (error instanceof Error) return error.message.replaceAll("\n", " ");
-  return String(error).replaceAll("\n", " ");
+  const message = error instanceof Error ? error.message : String(error);
+  const sanitized = message.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ");
+  return sanitized.length <= MAX_LOADER_ERROR_LENGTH
+    ? sanitized
+    : `${sanitized.slice(0, MAX_LOADER_ERROR_LENGTH)}...`;
 }
 
 function linuxLibc() {
@@ -38,8 +42,8 @@ function candidateTargets() {
   if (platform === "darwin" && (arch === "arm64" || arch === "x64")) {
     return [`darwin-${arch}`];
   }
-  if (platform === "win32" && (arch === "arm64" || arch === "x64")) {
-    return [`win32-${arch}-msvc`];
+  if (platform === "win32" && arch === "x64") {
+    return ["win32-x64-msvc"];
   }
   if (platform === "linux" && arch === "arm64") {
     return ["linux-arm64-gnu"];
@@ -62,24 +66,7 @@ function normalizeBinding(value, source) {
   return candidate;
 }
 
-function loadOverride() {
-  const configuredPath = process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
-  if (!configuredPath) return undefined;
-  const resolvedPath = isAbsolute(configuredPath)
-    ? configuredPath
-    : resolve(process.cwd(), configuredPath);
-  if (!existsSync(resolvedPath)) {
-    throw new Error(
-      `NAPI_RS_NATIVE_LIBRARY_PATH does not identify an existing file: ${resolvedPath}`,
-    );
-  }
-  return normalizeBinding(require(resolvedPath), resolvedPath);
-}
-
 function loadNativeBinding() {
-  const override = loadOverride();
-  if (override !== undefined) return override;
-
   const targets = candidateTargets();
   if (targets.length === 0) {
     throw new Error(

@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.settings.name }}
@@ -20,6 +24,7 @@ jobs:
             os: macos-15
             node-arch: arm64
             target: aarch64-apple-darwin
+            artifact-suffix: darwin-arm64
             build-args: ""
             macos-deployment-target: "11.0"
             musl: false
@@ -27,76 +32,82 @@ jobs:
             os: macos-15-intel
             node-arch: x64
             target: x86_64-apple-darwin
+            artifact-suffix: darwin-x64
             build-args: ""
             macos-deployment-target: "10.15"
             musl: false
-          - name: Windows arm64
-            os: windows-11-arm
-            node-arch: arm64
-            target: aarch64-pc-windows-msvc
-            build-args: ""
-            musl: false
           - name: Windows x64
-            os: windows-latest
+            os: windows-2022
             node-arch: x64
             target: x86_64-pc-windows-msvc
+            artifact-suffix: win32-x64-msvc
             build-args: ""
             musl: false
           - name: Linux arm64 glibc
             os: ubuntu-24.04-arm
             node-arch: arm64
             target: aarch64-unknown-linux-gnu
+            artifact-suffix: linux-arm64-gnu
             build-args: --use-napi-cross
             musl: false
           - name: Linux x64 glibc
             os: ubuntu-22.04
             node-arch: x64
             target: x86_64-unknown-linux-gnu
+            artifact-suffix: linux-x64-gnu
             build-args: --use-napi-cross
             musl: false
           - name: Linux x64 musl
             os: ubuntu-22.04
             node-arch: x64
             target: x86_64-unknown-linux-musl
+            artifact-suffix: linux-x64-musl
             build-args: --cross-compile
             musl: true
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "22"
+          node-version: "22.23.2"
           architecture: ${{ matrix.settings.node-arch }}
           package-manager-cache: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.88.0"
-          targets: ${{ matrix.settings.target }}
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.settings.target }}
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --target "$BUILD_TARGET"
+          rustup default 1.88.0
 
       - name: Configure macOS deployment target
         if: startsWith(matrix.settings.target, 'aarch64-apple') || startsWith(matrix.settings.target, 'x86_64-apple')
         shell: bash
-        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.settings.macos-deployment-target }}" >> "$GITHUB_ENV"
+        env:
+          DEPLOYMENT_TARGET: ${{ matrix.settings.macos-deployment-target }}
+        run: echo "MACOSX_DEPLOYMENT_TARGET=$DEPLOYMENT_TARGET" >> "$GITHUB_ENV"
 
       - name: Install Zig
         if: matrix.settings.musl
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
 
       - name: Install cargo-zigbuild
         if: matrix.settings.musl
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild@0.23.0
+          fallback: none
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -106,6 +117,9 @@ jobs:
 
       - name: Build native addon
         shell: bash
+        env:
+          BUILD_ARGS: ${{ matrix.settings.build-args }}
+          BUILD_TARGET: ${{ matrix.settings.target }}
         run: >-
           pnpm --dir packages/gpu exec napi build
           --manifest-path ../../crates/gpu-napi/Cargo.toml
@@ -114,11 +128,14 @@ jobs:
           --no-js
           --dts generated/native.d.ts
           --release
-          --target ${{ matrix.settings.target }}
-          ${{ matrix.settings.build-args }}
+          --target "$BUILD_TARGET"
+          $BUILD_ARGS
 
       - name: Validate native artifact
-        run: pnpm native:validate-artifact ${{ matrix.settings.target }}
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.settings.target }}
+        run: pnpm native:validate-artifact "$BUILD_TARGET"
 
       - name: Test public native loader
         if: ${{ !matrix.settings.musl }}
@@ -127,17 +144,19 @@ jobs:
       - name: Test public native loader on musl
         if: matrix.settings.musl
         shell: bash
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: >-
           docker run --rm
-          --volume "${{ github.workspace }}:/workspace"
+          --volume "$WORKSPACE:/workspace"
           --workdir /workspace
-          node:22-alpine
+          node:22.23.2-alpine@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c
           node scripts/test-native-loader.mjs
 
       - name: Upload native artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: bindings-${{ matrix.settings.target }}
-          path: packages/gpu/let-smi.*.node
+          path: packages/gpu/let-smi.${{ matrix.settings.artifact-suffix }}.node
           if-no-files-found: error
           retention-days: 7
