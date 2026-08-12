@@ -1,0 +1,91 @@
+{
+  "name": "let-smi",
+  "version": "0.1.0",
+  "description": "Cross-platform GPU discovery and telemetry for Node.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryanthetechman/let-smi.git",
+    "directory": "packages/gpu"
+  },
+  "sideEffects": false,
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "native.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
+  "napi": {
+    "binaryName": "let-smi",
+    "packageName": "let-smi",
+    "npmClient": "npm",
+    "rootPublisher": "npm",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "aarch64-pc-windows-msvc",
+      "x86_64-pc-windows-msvc",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl"
+    ]
+  },
+  "optionalDependencies": {
+    "let-smi-darwin-arm64": "0.1.0",
+    "let-smi-darwin-x64": "0.1.0",
+    "let-smi-linux-arm64-gnu": "0.1.0",
+    "let-smi-linux-x64-gnu": "0.1.0",
+    "let-smi-linux-x64-musl": "0.1.0",
+    "let-smi-win32-arm64-msvc": "0.1.0",
+    "let-smi-win32-x64-msvc": "0.1.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "lint": "eslint src tests *.config.ts",
+    "native:artifacts": "napi artifacts --output-dir ../../artifacts --npm-dir npm",
+    "native:build:debug": "napi build --manifest-path ../../crates/gpu-napi/Cargo.toml --output-dir . --platform --no-js --dts generated/native.d.ts",
+    "native:build:release": "napi build --manifest-path ../../crates/gpu-napi/Cargo.toml --output-dir . --platform --no-js --dts generated/native.d.ts --release",
+    "native:create-npm": "napi create-npm-dirs --npm-dir npm && node ../../scripts/prepare-native-packages.mjs",
+    "native:prepublish": "napi pre-publish --npm-dir npm --tag-style npm --root-publisher npm",
+    "prepublishOnly": "pnpm native:prepublish",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pack:check": "pnpm build && npm pack --dry-run --ignore-scripts"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@napi-rs/cli": "3.8.5",
+    "@types/node": "22.20.1",
+    "eslint": "10.8.1",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.10"
+  }
+}

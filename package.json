@@ -1,0 +1,39 @@
+{
+  "name": "let-smi-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm --filter let-smi build",
+    "build:native": "pnpm native:build:release",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm rust:check && pnpm native:config:check && pnpm subprocess:check",
+    "format": "prettier --write . && cargo fmt --all",
+    "format:check": "prettier --check . && cargo fmt --all -- --check",
+    "lint": "eslint packages/gpu/src packages/gpu/tests packages/gpu/*.config.ts --max-warnings 0",
+    "native:artifacts": "pnpm --dir packages/gpu native:artifacts",
+    "native:build:debug": "pnpm --dir packages/gpu native:build:debug",
+    "native:build:release": "pnpm --dir packages/gpu native:build:release",
+    "native:config:check": "node scripts/validate-packaging.mjs && pnpm --dir packages/gpu exec napi create-npm-dirs --npm-dir npm --dry-run",
+    "native:create-npm": "pnpm --dir packages/gpu native:create-npm",
+    "native:prepublish": "pnpm --dir packages/gpu native:prepublish",
+    "native:prepublish:dry": "pnpm --dir packages/gpu native:prepublish --dry-run",
+    "native:test-loader": "node scripts/test-native-loader.mjs",
+    "native:validate-artifact": "node scripts/validate-native-artifact.mjs",
+    "typecheck": "pnpm --filter let-smi typecheck",
+    "test": "pnpm --filter let-smi test",
+    "rust:check": "cargo test --workspace --all-targets --locked && cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "pack:check": "pnpm --filter let-smi pack:check",
+    "subprocess:check": "node scripts/check-no-subprocess.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.2.0",
+    "eslint": "10.8.1",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0"
+  }
+}

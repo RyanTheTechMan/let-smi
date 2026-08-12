@@ -1,0 +1,143 @@
+name: Native artifacts
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.settings.name }}
+    runs-on: ${{ matrix.settings.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - name: macOS arm64
+            os: macos-15
+            node-arch: arm64
+            target: aarch64-apple-darwin
+            build-args: ""
+            macos-deployment-target: "11.0"
+            musl: false
+          - name: macOS x64
+            os: macos-15-intel
+            node-arch: x64
+            target: x86_64-apple-darwin
+            build-args: ""
+            macos-deployment-target: "10.15"
+            musl: false
+          - name: Windows arm64
+            os: windows-11-arm
+            node-arch: arm64
+            target: aarch64-pc-windows-msvc
+            build-args: ""
+            musl: false
+          - name: Windows x64
+            os: windows-latest
+            node-arch: x64
+            target: x86_64-pc-windows-msvc
+            build-args: ""
+            musl: false
+          - name: Linux arm64 glibc
+            os: ubuntu-24.04-arm
+            node-arch: arm64
+            target: aarch64-unknown-linux-gnu
+            build-args: --use-napi-cross
+            musl: false
+          - name: Linux x64 glibc
+            os: ubuntu-22.04
+            node-arch: x64
+            target: x86_64-unknown-linux-gnu
+            build-args: --use-napi-cross
+            musl: false
+          - name: Linux x64 musl
+            os: ubuntu-22.04
+            node-arch: x64
+            target: x86_64-unknown-linux-musl
+            build-args: --cross-compile
+            musl: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          architecture: ${{ matrix.settings.node-arch }}
+          package-manager-cache: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+          targets: ${{ matrix.settings.target }}
+
+      - name: Configure macOS deployment target
+        if: startsWith(matrix.settings.target, 'aarch64-apple') || startsWith(matrix.settings.target, 'x86_64-apple')
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.settings.macos-deployment-target }}" >> "$GITHUB_ENV"
+
+      - name: Install Zig
+        if: matrix.settings.musl
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install cargo-zigbuild
+        if: matrix.settings.musl
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build public JavaScript package
+        run: pnpm build
+
+      - name: Build native addon
+        shell: bash
+        run: >-
+          pnpm --dir packages/gpu exec napi build
+          --manifest-path ../../crates/gpu-napi/Cargo.toml
+          --output-dir .
+          --platform
+          --no-js
+          --dts generated/native.d.ts
+          --release
+          --target ${{ matrix.settings.target }}
+          ${{ matrix.settings.build-args }}
+
+      - name: Validate native artifact
+        run: pnpm native:validate-artifact ${{ matrix.settings.target }}
+
+      - name: Test public native loader
+        if: ${{ !matrix.settings.musl }}
+        run: pnpm native:test-loader
+
+      - name: Test public native loader on musl
+        if: matrix.settings.musl
+        shell: bash
+        run: >-
+          docker run --rm
+          --volume "${{ github.workspace }}:/workspace"
+          --workdir /workspace
+          node:22-alpine
+          node scripts/test-native-loader.mjs
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: packages/gpu/let-smi.*.node
+          if-no-files-found: error
+          retention-days: 7
