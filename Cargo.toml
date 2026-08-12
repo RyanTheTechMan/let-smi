@@ -12,7 +12,7 @@ rust-version = "1.88"
 [workspace.dependencies]
 blake3 = { version = "=1.8.6", features = ["pure"] }
 libloading = "=0.8.9"
-napi = { version = "=3.12.1", default-features = false, features = ["napi8", "async", "serde-json"] }
+napi = { version = "=3.12.1", default-features = false, features = ["napi8", "async", "serde-json", "dyn-symbols"] }
 napi-derive = "=3.6.3"
 napi-build = "=2.4.1"
 parking_lot = "=0.12.5"

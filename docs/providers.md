@@ -183,6 +183,8 @@ IOReport is private and Apple Silicon-only. The provider:
 - resolves every required symbol before use;
 - version-gates unvalidated macOS major versions;
 - subscribes only to GPU performance-state residency and GPU energy channels;
+- bounds total channel enumeration at 65,536 entries and retains at most 256
+  selected GPU channels;
 - owns CoreFoundation objects with deterministic release;
 - returns `first-sample` until it has two samples.
 

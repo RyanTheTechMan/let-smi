@@ -189,3 +189,14 @@ pnpm test:windows-hardware
 It skips cleanly unless Windows x64 has exactly one Intel and one NVIDIA
 physical adapter with functional PDH and NVML. The parent process enforces the
 exit deadline.
+
+## Observed Apple Silicon validation — 2026-08-12
+
+Hardware-tested on an Apple M5 Max running macOS 27 as a normal user. Metal
+discovered one stable Apple GPU. The host exposed 11,884 total IOReport channels
+before filtering, including the supported GPU residency and energy channels;
+the provider retained only its bounded GPU subset. A measured sample returned
+derived utilization, power, and energy from IOReport plus an estimated
+temperature from 64 AppleSMC GPU die sensors. Public ESM and CommonJS loading,
+the arm64 Mach-O artifact check, the complete Rust/NAPI test suite, and strict
+Clippy all passed without `sudo` or an external executable.

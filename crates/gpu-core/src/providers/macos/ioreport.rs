@@ -33,7 +33,10 @@ use std::time::Instant;
 const PROVIDER_ID: &str = "apple-ioreport";
 const MAX_VALIDATED_MACOS_MAJOR: u32 = 27;
 const MAX_IOREPORT_DICTIONARY_ENTRIES: usize = 4_096;
-const MAX_IOREPORT_CHANNELS: usize = 4_096;
+// Modern high-end Apple Silicon systems expose well over ten thousand total
+// IOReport channels before the provider filters down to its small GPU subset.
+// Keep enumeration bounded while allowing current hardware inventories.
+const MAX_IOREPORT_CHANNELS: usize = 65_536;
 const MAX_SELECTED_IOREPORT_CHANNELS: usize = 256;
 const MAX_IOREPORT_STATES: usize = 256;
 const MAX_CF_STRING_UNITS: usize = 4_096;
@@ -841,6 +844,22 @@ mod tests {
         assert!(checked_cf_count("fixture", -1, 10).is_err());
         assert!(checked_cf_count("fixture", 11, 10).is_err());
         assert_eq!(checked_cf_count("fixture", 10, 10), Ok(10));
+        assert_eq!(
+            checked_cf_count(
+                "modern Apple Silicon fixture",
+                11_884,
+                MAX_IOREPORT_CHANNELS,
+            ),
+            Ok(11_884)
+        );
+        assert!(
+            checked_cf_count(
+                "oversized Apple Silicon fixture",
+                65_537,
+                MAX_IOREPORT_CHANNELS,
+            )
+            .is_err()
+        );
         assert!(checked_i32_count("fixture", -1, 10).is_err());
         assert!(checked_i32_count("fixture", 11, 10).is_err());
         assert_eq!(checked_i32_count("fixture", 10, 10), Ok(10));
