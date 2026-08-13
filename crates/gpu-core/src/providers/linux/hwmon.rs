@@ -1,33 +1,38 @@
 use super::metric::{MetricReader, MetricSource};
-use super::parse::{numbered_attribute, read_text};
+use super::parse::{numbered_attribute, read_text_within};
 use crate::model::{GpuVendor, MetricKey, MetricQuality};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const MAX_HWMON_DIRECTORIES: usize = 32;
+const MAX_HWMON_DIRECTORY_ENTRIES: usize = 128;
+
 pub(crate) fn discover(device_path: &Path, vendor: GpuVendor) -> Vec<MetricSource> {
     let hwmon_root = device_path.join("hwmon");
-    let mut directories = read_directories(&hwmon_root);
+    let mut directories = read_directories(&hwmon_root, device_path);
     directories.sort();
 
     let mut sources = Vec::new();
     for directory in directories {
-        let hwmon_name = read_text(&directory.join("name")).unwrap_or_default();
-        discover_temperatures(&directory, vendor, &hwmon_name, &mut sources);
-        discover_power(&directory, &hwmon_name, &mut sources);
-        discover_fans(&directory, &hwmon_name, &mut sources);
-        discover_clocks(&directory, &hwmon_name, &mut sources);
+        let hwmon_name = read_text_within(&directory.join("name"), device_path).unwrap_or_default();
+        discover_temperatures(&directory, device_path, vendor, &hwmon_name, &mut sources);
+        discover_power(&directory, device_path, &hwmon_name, &mut sources);
+        discover_fans(&directory, device_path, &hwmon_name, &mut sources);
+        discover_clocks(&directory, device_path, &hwmon_name, &mut sources);
     }
     sources
 }
 
 fn discover_temperatures(
     directory: &Path,
+    device_path: &Path,
     vendor: GpuVendor,
     hwmon_name: &str,
     sources: &mut Vec<MetricSource>,
 ) {
     for (index, input) in numbered_files(directory, "temp", "_input") {
-        let label = read_text(&directory.join(format!("temp{index}_label"))).ok();
+        let label =
+            read_text_within(&directory.join(format!("temp{index}_label")), device_path).ok();
         let Some((key, quality, semantic)) = temperature_semantic(vendor, index, label.as_deref())
         else {
             continue;
@@ -112,9 +117,14 @@ fn temperature_semantic(
     ))
 }
 
-fn discover_power(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSource>) {
+fn discover_power(
+    directory: &Path,
+    device_path: &Path,
+    hwmon_name: &str,
+    sources: &mut Vec<MetricSource>,
+) {
     for (index, path) in numbered_files(directory, "power", "_average") {
-        let label = sensor_label(directory, "power", index);
+        let label = sensor_label(directory, device_path, "power", index);
         sources.push(MetricSource::new(
             MetricKey::PowerDrawWatts,
             MetricReader::MicroWatts(path),
@@ -128,7 +138,7 @@ fn discover_power(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSo
         ));
     }
     for (index, path) in numbered_files(directory, "power", "_input") {
-        let label = sensor_label(directory, "power", index);
+        let label = sensor_label(directory, device_path, "power", index);
         sources.push(MetricSource::new(
             MetricKey::PowerDrawWatts,
             MetricReader::MicroWatts(path),
@@ -142,7 +152,7 @@ fn discover_power(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSo
         ));
     }
     for (index, path) in numbered_files(directory, "power", "_cap") {
-        let label = sensor_label(directory, "power", index);
+        let label = sensor_label(directory, device_path, "power", index);
         sources.push(MetricSource::new(
             MetricKey::PowerLimitWatts,
             MetricReader::MicroWatts(path),
@@ -156,7 +166,7 @@ fn discover_power(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSo
         ));
     }
     for (index, path) in numbered_files(directory, "energy", "_input") {
-        let label = sensor_label(directory, "energy", index);
+        let label = sensor_label(directory, device_path, "energy", index);
         sources.push(MetricSource::new(
             MetricKey::PowerEnergyJoules,
             MetricReader::MicroJoules(path),
@@ -171,9 +181,14 @@ fn discover_power(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSo
     }
 }
 
-fn discover_fans(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSource>) {
+fn discover_fans(
+    directory: &Path,
+    device_path: &Path,
+    hwmon_name: &str,
+    sources: &mut Vec<MetricSource>,
+) {
     for (index, path) in numbered_files(directory, "fan", "_input") {
-        let label = sensor_label(directory, "fan", index);
+        let label = sensor_label(directory, device_path, "fan", index);
         sources.push(MetricSource::new(
             MetricKey::FanRpm,
             MetricReader::Rpm(path),
@@ -203,9 +218,16 @@ fn discover_fans(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSou
     }
 }
 
-fn discover_clocks(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricSource>) {
+fn discover_clocks(
+    directory: &Path,
+    device_path: &Path,
+    hwmon_name: &str,
+    sources: &mut Vec<MetricSource>,
+) {
     for (index, path) in numbered_files(directory, "freq", "_input") {
-        let Ok(label) = read_text(&directory.join(format!("freq{index}_label"))) else {
+        let Ok(label) =
+            read_text_within(&directory.join(format!("freq{index}_label")), device_path)
+        else {
             continue;
         };
         let normalized = normalize_label(&label);
@@ -231,17 +253,20 @@ fn discover_clocks(directory: &Path, hwmon_name: &str, sources: &mut Vec<MetricS
     }
 }
 
-fn read_directories(path: &Path) -> Vec<PathBuf> {
+fn read_directories(path: &Path, device_path: &Path) -> Vec<PathBuf> {
     fs::read_dir(path)
         .into_iter()
         .flatten()
+        .take(MAX_HWMON_DIRECTORIES)
         .filter_map(Result::ok)
         .filter_map(|entry| {
             entry
                 .file_type()
                 .ok()
                 .filter(|kind| kind.is_dir() || kind.is_symlink())
-                .map(|_| entry.path())
+                .and_then(|_| fs::canonicalize(entry.path()).ok())
+                .filter(|path| path.starts_with(device_path))
+                .filter(|path| path.is_dir())
         })
         .collect()
 }
@@ -250,6 +275,7 @@ fn numbered_files(directory: &Path, prefix: &str, suffix: &str) -> Vec<(u32, Pat
     let mut files: Vec<_> = fs::read_dir(directory)
         .into_iter()
         .flatten()
+        .take(MAX_HWMON_DIRECTORY_ENTRIES)
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name();
@@ -266,8 +292,12 @@ fn numbered_files(directory: &Path, prefix: &str, suffix: &str) -> Vec<(u32, Pat
     files
 }
 
-fn sensor_label(directory: &Path, prefix: &str, index: u32) -> Option<String> {
-    read_text(&directory.join(format!("{prefix}{index}_label"))).ok()
+fn sensor_label(directory: &Path, device_path: &Path, prefix: &str, index: u32) -> Option<String> {
+    read_text_within(
+        &directory.join(format!("{prefix}{index}_label")),
+        device_path,
+    )
+    .ok()
 }
 
 fn normalize_label(value: &str) -> String {
@@ -293,6 +323,8 @@ fn label_suffix(label: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn amd_unlabelled_temperature_indices_use_documented_meanings() {
@@ -316,5 +348,51 @@ mod tests {
             temperature_semantic(GpuVendor::Amd, 1, Some("junction")).map(|value| value.0),
             Some(MetricKey::TemperatureHotspotCelsius)
         );
+    }
+
+    #[test]
+    fn limits_sensor_attributes_per_hwmon_directory() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "let-smi-linux-hwmon-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("hwmon fixture directory");
+        for index in 1..=MAX_HWMON_DIRECTORY_ENTRIES + 1 {
+            fs::write(directory.join(format!("temp{index}_input")), "42000\n")
+                .expect("sensor fixture");
+        }
+
+        assert_eq!(
+            numbered_files(&directory, "temp", "_input").len(),
+            MAX_HWMON_DIRECTORY_ENTRIES
+        );
+        fs::remove_dir_all(directory).expect("remove hwmon fixture");
+    }
+
+    #[test]
+    fn limits_attributable_hwmon_directories() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let device = std::env::temp_dir().join(format!(
+            "let-smi-linux-hwmon-directories-{}-{nonce}",
+            std::process::id()
+        ));
+        let hwmon = device.join("hwmon");
+        for index in 0..=MAX_HWMON_DIRECTORIES {
+            fs::create_dir_all(hwmon.join(format!("hwmon{index}")))
+                .expect("hwmon directory fixture");
+        }
+
+        assert_eq!(
+            read_directories(&hwmon, &device).len(),
+            MAX_HWMON_DIRECTORIES
+        );
+        fs::remove_dir_all(device).expect("remove hwmon fixture");
     }
 }

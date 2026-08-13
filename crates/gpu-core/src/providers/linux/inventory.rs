@@ -1,6 +1,6 @@
 use super::hwmon;
 use super::metric::{MetricReader, MetricSource};
-use super::parse::{drm_node_name, parse_u64, read_text, uevent_value};
+use super::parse::{drm_node_name, parse_u64, read_text_within, uevent_value};
 use super::roots::LinuxRoots;
 use crate::model::{
     CapabilitySet, DeviceObservation, GpuKind, GpuVendor, MemoryTopology, MetricKey, MetricQuality,
@@ -13,6 +13,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub(crate) const PROVIDER_ID: &str = "linux-sysfs";
+const MAX_PCI_DEVICE_ENTRIES: usize = 512;
+const MAX_DRM_NODE_ENTRIES: usize = 512;
+const MAX_CHILD_DEVICE_ENTRIES: usize = 64;
+const MAX_METRIC_SOURCES_PER_KEY: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LinuxDeviceRecord {
@@ -39,19 +43,26 @@ struct DeviceBuilder {
 pub(crate) fn discover(roots: &LinuxRoots, include_software_adapters: bool) -> InventoryResult {
     let mut result = InventoryResult::default();
     let mut devices: BTreeMap<PathBuf, DeviceBuilder> = BTreeMap::new();
+    let sys_root = canonical_or_self(&roots.sys);
 
-    match fs::read_dir(roots.pci_devices()) {
-        Ok(entries) => {
+    match bounded_read_dir(&roots.pci_devices(), MAX_PCI_DEVICE_ENTRIES) {
+        Ok((entries, truncated)) => {
             result.sysfs_available = true;
-            for entry in entries.filter_map(Result::ok) {
-                let path = entry.path();
-                let Some(class) = read_optional_u64(&path.join("class")) else {
+            if truncated {
+                result.warnings.push(format!(
+                    "PCI sysfs entry limit ({MAX_PCI_DEVICE_ENTRIES}) reached; additional entries were skipped"
+                ));
+            }
+            for entry in entries {
+                let Some(canonical) = canonicalize_under(&sys_root, &entry.path()) else {
+                    continue;
+                };
+                let Some(class) = read_optional_u64(&canonical, &canonical.join("class")) else {
                     continue;
                 };
                 if (class >> 16) != 0x03 {
                     continue;
                 }
-                let canonical = canonical_or_self(&path);
                 let pci_address = entry.file_name().to_string_lossy().into_owned();
                 let builder = devices
                     .entry(canonical.clone())
@@ -69,16 +80,21 @@ pub(crate) fn discover(roots: &LinuxRoots, include_software_adapters: bool) -> I
         Err(_) => {}
     }
 
-    match fs::read_dir(roots.drm_class()) {
-        Ok(entries) => {
+    match bounded_read_dir(&roots.drm_class(), MAX_DRM_NODE_ENTRIES) {
+        Ok((entries, truncated)) => {
             result.sysfs_available = true;
-            for entry in entries.filter_map(Result::ok) {
+            if truncated {
+                result.warnings.push(format!(
+                    "DRM sysfs entry limit ({MAX_DRM_NODE_ENTRIES}) reached; additional entries were skipped"
+                ));
+            }
+            for entry in entries {
                 let node = entry.file_name().to_string_lossy().into_owned();
                 if !drm_node_name(&node) {
                     continue;
                 }
                 let device_link = entry.path().join("device");
-                let Ok(canonical) = fs::canonicalize(&device_link) else {
+                let Some(canonical) = canonicalize_under(&sys_root, &device_link) else {
                     continue;
                 };
                 let builder = devices
@@ -108,13 +124,29 @@ pub(crate) fn discover(roots: &LinuxRoots, include_software_adapters: bool) -> I
     result
 }
 
+fn bounded_read_dir(path: &Path, limit: usize) -> io::Result<(Vec<fs::DirEntry>, bool)> {
+    let mut entries = Vec::with_capacity(limit.min(64));
+    for (index, entry) in fs::read_dir(path)?
+        .take(limit.saturating_add(1))
+        .enumerate()
+    {
+        if index == limit {
+            return Ok((entries, true));
+        }
+        if let Ok(entry) = entry {
+            entries.push(entry);
+        }
+    }
+    Ok((entries, false))
+}
+
 fn build_record(
     roots: &LinuxRoots,
     builder: DeviceBuilder,
     include_software_adapters: bool,
 ) -> Option<LinuxDeviceRecord> {
     let device_path = builder.device_path;
-    let driver = driver_name(&device_path);
+    let driver = driver_name(roots, &device_path);
     if !include_software_adapters && driver.as_deref().is_some_and(is_software_driver) {
         return None;
     }
@@ -138,6 +170,7 @@ fn build_record(
                 .cmp(&left.priority)
                 .then_with(|| left.definition.cmp(&right.definition))
         });
+        sources.truncate(MAX_METRIC_SOURCES_PER_KEY);
     }
 
     let memory = static_memory(&device_path);
@@ -156,14 +189,15 @@ fn build_record(
     );
     observation.pci = pci;
     observation.kind = gpu_kind(driver.as_deref());
-    observation.driver_version = driver_version(&device_path);
-    observation.firmware_version = read_text(&device_path.join("vbios_version"))
-        .ok()
-        .filter(|value| !value.is_empty());
+    observation.driver_version = driver_version(roots, &device_path);
+    observation.firmware_version =
+        read_device_text(&device_path, &device_path.join("vbios_version"))
+            .ok()
+            .filter(|value| !value.is_empty());
     observation.memory = memory;
     observation.capabilities = capabilities;
     observation.identity_priority = 60;
-    observation.parent_provider_device_id = parent_device_id(&device_path);
+    observation.parent_provider_device_id = parent_device_id(roots, &device_path);
     if observation.parent_provider_device_id.is_some() {
         observation.partition = Some(PartitionIdentity {
             partition_type: PartitionType::Sriov,
@@ -216,6 +250,7 @@ fn discover_device_sources(
     if vendor == GpuVendor::Amd || driver == Some("amdgpu") {
         add_if_present(
             &mut sources,
+            device_path,
             MetricSource::new(
                 MetricKey::UtilizationOverall,
                 MetricReader::Percent(device_path.join("gpu_busy_percent")),
@@ -226,6 +261,7 @@ fn discover_device_sources(
         );
         add_if_present(
             &mut sources,
+            device_path,
             MetricSource::new(
                 MetricKey::MemoryBandwidthUtilizationPercent,
                 MetricReader::Percent(device_path.join("mem_busy_percent")),
@@ -236,6 +272,7 @@ fn discover_device_sources(
         );
         add_if_present(
             &mut sources,
+            device_path,
             MetricSource::new(
                 MetricKey::MemoryDedicatedUsedBytes,
                 MetricReader::Bytes(device_path.join("mem_info_vram_used")),
@@ -246,6 +283,7 @@ fn discover_device_sources(
         );
         add_if_present(
             &mut sources,
+            device_path,
             MetricSource::new(
                 MetricKey::MemorySharedUsedBytes,
                 MetricReader::Bytes(device_path.join("mem_info_gtt_used")),
@@ -256,6 +294,7 @@ fn discover_device_sources(
         );
         add_if_present(
             &mut sources,
+            device_path,
             MetricSource::new(
                 MetricKey::ClockGraphicsMhz,
                 MetricReader::ActiveDpmMhz(device_path.join("pp_dpm_sclk")),
@@ -266,6 +305,7 @@ fn discover_device_sources(
         );
         add_if_present(
             &mut sources,
+            device_path,
             MetricSource::new(
                 MetricKey::ClockMemoryMhz,
                 MetricReader::ActiveDpmMhz(device_path.join("pp_dpm_mclk")),
@@ -288,7 +328,7 @@ fn discover_device_sources(
             if legacy_path.exists() {
                 frequency_paths.push(legacy_path);
             }
-            for gt in read_child_directories(&card_path.join("gt"), "gt") {
+            for gt in read_child_directories(&card_path.join("gt"), device_path, "gt") {
                 let path = gt.join("rps_cur_freq_mhz");
                 if path.exists() {
                     frequency_paths.push(path);
@@ -328,16 +368,16 @@ fn discover_device_sources(
     grouped
 }
 
-fn add_if_present(sources: &mut Vec<MetricSource>, source: MetricSource) {
-    if source.exists() {
+fn add_if_present(sources: &mut Vec<MetricSource>, device_path: &Path, source: MetricSource) {
+    if source.exists(device_path) {
         sources.push(source);
     }
 }
 
 fn xe_frequency_paths(device_path: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    for tile in read_child_directories(device_path, "tile") {
-        for gt in read_child_directories(&tile, "gt") {
+    for tile in read_child_directories(device_path, device_path, "tile") {
+        for gt in read_child_directories(&tile, device_path, "gt") {
             let path = gt.join("freq0/act_freq");
             if path.exists() {
                 paths.push(path);
@@ -348,11 +388,12 @@ fn xe_frequency_paths(device_path: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn read_child_directories(parent: &Path, prefix: &str) -> Vec<PathBuf> {
-    fs::read_dir(parent)
+fn read_child_directories(parent: &Path, device_path: &Path, prefix: &str) -> Vec<PathBuf> {
+    bounded_read_dir(parent, MAX_CHILD_DEVICE_ENTRIES)
+        .ok()
+        .map(|(entries, _)| entries)
         .into_iter()
         .flatten()
-        .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name();
             let name = name.to_str()?;
@@ -360,18 +401,14 @@ fn read_child_directories(parent: &Path, prefix: &str) -> Vec<PathBuf> {
             if suffix.is_empty() || !suffix.chars().all(|character| character.is_ascii_digit()) {
                 return None;
             }
-            entry
-                .file_type()
-                .ok()
-                .filter(|kind| kind.is_dir() || kind.is_symlink())
-                .map(|_| entry.path())
+            canonicalize_under(device_path, &entry.path()).filter(|path| path.is_dir())
         })
         .collect()
 }
 
 fn pci_identity(device_path: &Path, address: Option<&str>) -> Option<PciIdentity> {
-    let vendor_id = read_optional_u64(&device_path.join("vendor"))?;
-    let device_id = read_optional_u64(&device_path.join("device"))?;
+    let vendor_id = read_optional_u64(device_path, &device_path.join("vendor"))?;
+    let device_id = read_optional_u64(device_path, &device_path.join("device"))?;
     Some(PciIdentity {
         address: address.map(str::to_owned).or_else(|| {
             device_path.file_name().and_then(|name| {
@@ -381,9 +418,9 @@ fn pci_identity(device_path: &Path, address: Option<&str>) -> Option<PciIdentity
         }),
         vendor_id: u32::try_from(vendor_id).ok()?,
         device_id: u32::try_from(device_id).ok()?,
-        subsystem_vendor_id: read_optional_u64(&device_path.join("subsystem_vendor"))
+        subsystem_vendor_id: read_optional_u64(device_path, &device_path.join("subsystem_vendor"))
             .and_then(|value| u32::try_from(value).ok()),
-        subsystem_device_id: read_optional_u64(&device_path.join("subsystem_device"))
+        subsystem_device_id: read_optional_u64(device_path, &device_path.join("subsystem_device"))
             .and_then(|value| u32::try_from(value).ok()),
     })
 }
@@ -404,8 +441,10 @@ fn looks_like_pci_address(value: &str) -> bool {
 }
 
 fn static_memory(device_path: &Path) -> StaticMemoryInfo {
-    let dedicated_total_bytes = read_optional_u64(&device_path.join("mem_info_vram_total"));
-    let shared_total_bytes = read_optional_u64(&device_path.join("mem_info_gtt_total"));
+    let dedicated_total_bytes =
+        read_optional_u64(device_path, &device_path.join("mem_info_vram_total"));
+    let shared_total_bytes =
+        read_optional_u64(device_path, &device_path.join("mem_info_gtt_total"));
     let topology = match (dedicated_total_bytes, shared_total_bytes) {
         (Some(dedicated), Some(shared)) if dedicated > 0 && shared > 0 => MemoryTopology::Mixed,
         (Some(dedicated), _) if dedicated > 0 => MemoryTopology::Dedicated,
@@ -420,30 +459,35 @@ fn static_memory(device_path: &Path) -> StaticMemoryInfo {
     }
 }
 
-fn parent_device_id(device_path: &Path) -> Option<String> {
-    let parent = fs::canonicalize(device_path.join("physfn")).ok()?;
+fn parent_device_id(roots: &LinuxRoots, device_path: &Path) -> Option<String> {
+    let parent = canonicalize_under(&canonical_or_self(&roots.sys), &device_path.join("physfn"))?;
     let name = parent.file_name()?.to_string_lossy();
     looks_like_pci_address(&name).then(|| name.into_owned())
 }
 
-fn driver_name(device_path: &Path) -> Option<String> {
-    canonical_basename(&device_path.join("driver/module"))
-        .or_else(|| canonical_basename(&device_path.join("driver")))
+fn driver_name(roots: &LinuxRoots, device_path: &Path) -> Option<String> {
+    let sys_root = canonical_or_self(&roots.sys);
+    canonical_basename_under(&sys_root, &device_path.join("driver/module"))
+        .or_else(|| canonical_basename_under(&sys_root, &device_path.join("driver")))
         .or_else(|| {
-            let uevent = read_text(&device_path.join("uevent")).ok()?;
+            let uevent = read_device_text(device_path, &device_path.join("uevent")).ok()?;
             uevent_value(&uevent, "DRIVER").map(str::to_owned)
         })
 }
 
-fn canonical_basename(path: &Path) -> Option<String> {
-    fs::canonicalize(path).ok().and_then(|path| {
+fn canonical_basename_under(root: &Path, path: &Path) -> Option<String> {
+    canonicalize_under(root, path).and_then(|path| {
         path.file_name()
             .map(|name| name.to_string_lossy().into_owned())
     })
 }
 
-fn driver_version(device_path: &Path) -> Option<String> {
-    read_text(&device_path.join("driver/module/version"))
+fn driver_version(roots: &LinuxRoots, device_path: &Path) -> Option<String> {
+    let module = canonicalize_under(
+        &canonical_or_self(&roots.sys),
+        &device_path.join("driver/module"),
+    )?;
+    read_text_within(&module.join("version"), &module)
         .ok()
         .filter(|value| !value.is_empty())
 }
@@ -474,7 +518,7 @@ fn is_software_driver(driver: &str) -> bool {
 }
 
 fn gpu_name(device_path: &Path, vendor: GpuVendor, pci: Option<&PciIdentity>) -> String {
-    if let Some(product_name) = read_text(&device_path.join("product_name"))
+    if let Some(product_name) = read_device_text(device_path, &device_path.join("product_name"))
         .ok()
         .filter(|value| !value.is_empty())
     {
@@ -499,10 +543,20 @@ fn platform_device_id(roots: &LinuxRoots, device_path: &Path) -> String {
     format!("platform:{}", relative.display())
 }
 
-fn read_optional_u64(path: &Path) -> Option<u64> {
-    read_text(path)
+fn read_optional_u64(device_path: &Path, path: &Path) -> Option<u64> {
+    read_device_text(device_path, path)
         .ok()
         .and_then(|value| parse_u64(&value).ok())
+}
+
+fn read_device_text(device_path: &Path, path: &Path) -> io::Result<String> {
+    read_text_within(path, device_path)
+}
+
+fn canonicalize_under(root: &Path, path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path)
+        .ok()
+        .filter(|candidate| candidate.starts_with(root))
 }
 
 fn canonical_or_self(path: &Path) -> PathBuf {
@@ -637,6 +691,50 @@ mod tests {
             .expect("PCI device symlink");
 
         assert!(discover(&fixture.roots, false).records.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignores_pci_symlinks_that_escape_the_injected_sysfs_root() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let outside = fixture.root.join("outside-sysfs-device");
+        fs::create_dir_all(&outside).expect("outside device directory");
+        write(&outside.join("class"), "0x030000\n");
+        write(&outside.join("vendor"), "0x10de\n");
+        write(&outside.join("device"), "0x28a3\n");
+        symlink(&outside, fixture.roots.pci_devices().join("0000:01:00.0"))
+            .expect("hostile PCI fixture symlink");
+
+        assert!(discover(&fixture.roots, false).records.is_empty());
+    }
+
+    #[test]
+    fn limits_tile_and_gt_directory_enumeration() {
+        let fixture = Fixture::new();
+        let device = fixture.amd_gpu();
+        let tiles = device.join("tiles");
+        for index in 0..=MAX_CHILD_DEVICE_ENTRIES {
+            fs::create_dir_all(tiles.join(format!("tile{index}"))).expect("tile fixture");
+        }
+
+        let directories = read_child_directories(&tiles, &device, "tile");
+        assert_eq!(directories.len(), MAX_CHILD_DEVICE_ENTRIES);
+    }
+
+    #[test]
+    fn bounds_directory_enumeration_attempts() {
+        let fixture = Fixture::new();
+        let directory = fixture.root.join("bounded-directory");
+        fs::create_dir_all(&directory).expect("bounded directory fixture");
+        for index in 0..5 {
+            fs::create_dir(directory.join(format!("entry{index}"))).expect("directory entry");
+        }
+
+        let (entries, truncated) = bounded_read_dir(&directory, 4).expect("bounded enumeration");
+        assert_eq!(entries.len(), 4);
+        assert!(truncated);
     }
 
     #[test]

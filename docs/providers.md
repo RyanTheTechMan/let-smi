@@ -112,7 +112,15 @@ default.
 The provider caches immutable discovery records and probes each metric file for
 the actual device. Read failures become `permission-denied`, `device-lost`,
 `temporarily-unavailable`, or `provider-error`. Sysfs values are size-bounded and
-strictly parsed.
+strictly parsed. PCI and DRM walks, hwmon directories/attributes, Intel tile/GT
+walks, and per-field metric candidates have explicit limits. Canonicalized
+devices must remain under the injected sysfs root, while telemetry attributes
+and attributable hwmon paths must remain beneath the canonical device. The
+alternate roots used by deterministic fixtures are crate-internal and cannot be
+selected through JavaScript or an environment variable.
+
+Linux does not infer `integrated` or `discrete` from an Intel or NVIDIA vendor
+ID. Kind stays `unknown` unless a device-specific platform signal supplies it.
 
 ### AMD Linux
 
@@ -144,7 +152,11 @@ dynamically loaded Level Zero Sysman or i915 PMU backend should supply this.
 
 Sysfs provides generic PCI/DRM identity and NVML supplies NVIDIA-specific
 identity/telemetry. `libnvidia-ml.so.1` is loaded at runtime through
-`nvml-wrapper`; its absence leaves sysfs discovery operational.
+`nvml-wrapper`; its absence leaves sysfs discovery and monitor initialization
+operational. Linux deliberately uses the platform dynamic loader rather than a
+hard-coded distribution path or `ldconfig`. That preserves standard driver and
+container library mounts, while deployments remain responsible for protecting
+their loader search environment from untrusted libraries.
 
 ## NVIDIA NVML
 
@@ -162,6 +174,8 @@ and hardware, the provider exposes:
 
 Device reacquisition prefers UUID, then PCI bus ID, then the original index only
 as a last resort. A failure in one NVML field does not discard other fields.
+Driver-returned strings and every variable-size collection are bounded before
+they enter canonical inventory or vendor information.
 MIG partition enumeration, NVLink, vGPU, and ECC counter details remain future
 work and need the documented hardware matrix.
 

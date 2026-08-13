@@ -79,6 +79,7 @@ mod implementation {
     const MAX_NVML_PROCESSES: usize = 16_384;
     const MAX_NVML_ENCODER_SESSIONS: usize = 4_096;
     const MAX_INVENTORY_FAILURE_DETAILS: usize = 16;
+    const MAX_NVML_STRING_BYTES: usize = 4_096;
 
     #[derive(Debug, Clone)]
     struct DeviceRecord {
@@ -110,8 +111,8 @@ mod implementation {
         fn initialize() -> Self {
             match initialize_runtime() {
                 Ok((nvml, runtime_message)) => {
-                    let nvml_version = nvml.sys_nvml_version().ok();
-                    let driver_version = nvml.sys_driver_version().ok();
+                    let nvml_version = nvml.sys_nvml_version().ok().and_then(bounded_string);
+                    let driver_version = nvml.sys_driver_version().ok().and_then(bounded_string);
                     Self {
                         nvml: Some(nvml),
                         nvml_version,
@@ -133,6 +134,23 @@ mod implementation {
                     records: BTreeMap::new(),
                     closed: false,
                 },
+            }
+        }
+
+        #[cfg(test)]
+        fn unavailable(reason: UnavailableReason, message: &str) -> Self {
+            Self {
+                nvml: None,
+                nvml_version: None,
+                driver_version: None,
+                initialization_failure: Some(Failure {
+                    reason,
+                    message: message.into(),
+                }),
+                runtime_message: None,
+                inventory_message: None,
+                records: BTreeMap::new(),
+                closed: false,
             }
         }
     }
@@ -183,11 +201,10 @@ mod implementation {
             }
             state.closed = true;
             state.records.clear();
-            if let Some(nvml) = state.nvml.take() {
-                if let Err(error) = nvml.shutdown() {
-                    state.inventory_message =
-                        Some(format!("NVML shutdown reported an error: {error}"));
-                }
+            if let Some(nvml) = state.nvml.take()
+                && let Err(error) = nvml.shutdown()
+            {
+                state.inventory_message = Some(format!("NVML shutdown reported an error: {error}"));
             }
         }
     }
@@ -251,7 +268,7 @@ mod implementation {
                         continue;
                     }
                 };
-                let uuid = device.uuid().ok();
+                let uuid = device.uuid().ok().and_then(bounded_string);
                 let pci_info = device.pci_info().ok();
                 let pci = pci_info.as_ref().map(pci_identity);
                 let canonical_bus_id = pci.as_ref().and_then(|identity| identity.address.clone());
@@ -263,14 +280,16 @@ mod implementation {
                 });
                 let name = device
                     .name()
-                    .unwrap_or_else(|_| format!("NVIDIA GPU {index}"));
+                    .ok()
+                    .and_then(bounded_string)
+                    .unwrap_or_else(|| format!("NVIDIA GPU {index}"));
                 let memory = device.memory_info().ok();
                 let architecture = device
                     .architecture()
                     .ok()
                     .and_then(architecture_name)
                     .map(str::to_owned);
-                let firmware_version = device.vbios_version().ok();
+                let firmware_version = device.vbios_version().ok().and_then(bounded_string);
                 let mut capabilities = probe_capabilities(&device, memory.is_some());
                 capabilities.vendor_extensions.insert("nvidia.nvml".into());
 
@@ -282,7 +301,11 @@ mod implementation {
                 );
                 observation.identity_priority = 100;
                 observation.enumeration_ordinal = Some(index);
-                observation.kind = if pci.is_some() {
+                // PCI identity is a strong correlation key, but on Linux it
+                // does not by itself describe integrated/discrete topology.
+                // Preserve the existing Windows behavior, where DXGI/D3DKMT
+                // normally contributes the stronger device-specific signal.
+                observation.kind = if cfg!(windows) && pci.is_some() {
                     GpuKind::Discrete
                 } else {
                     GpuKind::Unknown
@@ -313,7 +336,7 @@ mod implementation {
 
                 let record = DeviceRecord {
                     uuid,
-                    pci_bus_id: pci_info.map(|value| value.bus_id),
+                    pci_bus_id: pci_info.map(|value| value.bus_id).and_then(bounded_string),
                     index,
                     capabilities,
                 };
@@ -488,6 +511,10 @@ mod implementation {
             subsystem_vendor_id,
             subsystem_device_id,
         }
+    }
+
+    fn bounded_string(value: String) -> Option<String> {
+        (value.len() <= MAX_NVML_STRING_BYTES).then_some(value)
     }
 
     fn architecture_name(value: DeviceArchitecture) -> Option<&'static str> {
@@ -1328,6 +1355,33 @@ mod implementation {
             assert_eq!(
                 unavailable_reason(&NvmlError::NoData),
                 UnavailableReason::TemporarilyUnavailable
+            );
+        }
+
+        #[test]
+        fn bounds_strings_returned_by_the_driver() {
+            assert_eq!(
+                bounded_string("driver-value".into()).as_deref(),
+                Some("driver-value")
+            );
+            assert!(bounded_string("x".repeat(MAX_NVML_STRING_BYTES + 1)).is_none());
+        }
+
+        #[test]
+        fn a_missing_nvml_runtime_degrades_without_inventory_failure() {
+            let provider = NvmlProvider {
+                state: Mutex::new(State::unavailable(
+                    UnavailableReason::DriverLibraryMissing,
+                    "mock NVML library is absent",
+                )),
+            };
+
+            assert!(provider.enumerate().expect("optional inventory").is_empty());
+            let diagnostic = provider.diagnostic();
+            assert!(!diagnostic.loaded);
+            assert_eq!(
+                diagnostic.reason,
+                Some(UnavailableReason::DriverLibraryMissing)
             );
         }
     }

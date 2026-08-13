@@ -23,7 +23,12 @@ const prohibited = [
   ["nvidia-smi executable", /\bnvidia-smi\b/u],
   ["amd-smi executable", /\bamd-smi\b/u],
   ["intel_gpu_top executable", /\bintel_gpu_top\b/u],
+  ["lspci executable", /["']lspci["']/u],
+  ["lsmod executable", /["']lsmod["']/u],
+  ["modinfo executable", /["']modinfo["']/u],
+  ["sensors executable", /["']sensors["']/u],
   ["powermetrics executable", /\bpowermetrics\b/u],
+  ["PowerShell executable", /["']powershell(?:\.exe)?["']/iu],
 ];
 
 const files = [...explicitFiles];

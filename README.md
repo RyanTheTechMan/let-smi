@@ -205,6 +205,7 @@ pnpm check
 pnpm native:build:release
 pnpm native:test-loader
 pnpm pack:check
+pnpm test:linux-hardware # skips unless NVIDIA + Intel are both present
 ```
 
 Repository documentation:

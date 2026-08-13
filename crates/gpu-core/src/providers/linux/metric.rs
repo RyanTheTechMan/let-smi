@@ -1,4 +1,4 @@
-use super::parse::{parse_active_dpm_clock_mhz, parse_f64, parse_u64, read_text};
+use super::parse::{parse_active_dpm_clock_mhz, parse_f64, parse_u64, read_text_within};
 use crate::model::{MetricKey, MetricQuality, MetricValue, UnavailableReason};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -69,8 +69,11 @@ impl MetricSource {
         }
     }
 
-    pub fn exists(&self) -> bool {
-        self.reader.paths().into_iter().any(|path| path.exists())
+    pub fn exists(&self, device_path: &Path) -> bool {
+        self.reader
+            .paths()
+            .into_iter()
+            .any(|path| path.exists() && read_text_within(path, device_path).is_ok())
     }
 
     pub fn probe(&self, device_path: &Path) -> bool {
@@ -138,7 +141,7 @@ impl MetricSource {
                 MetricValue::Number(nonnegative(path, value)?)
             }
             MetricReader::ActiveDpmMhz(path) => {
-                let text = read_text(path)
+                let text = read_text_within(path, device_path)
                     .map_err(|error| MetricReadError::from_io(path, device_path, error))?;
                 let value = parse_active_dpm_clock_mhz(&text)
                     .map_err(|message| MetricReadError::provider(path, message))?;
@@ -221,14 +224,14 @@ fn reason_rank(reason: UnavailableReason) -> u8 {
 }
 
 fn read_u64(path: &Path, device_path: &Path) -> Result<u64, MetricReadError> {
-    let text =
-        read_text(path).map_err(|error| MetricReadError::from_io(path, device_path, error))?;
+    let text = read_text_within(path, device_path)
+        .map_err(|error| MetricReadError::from_io(path, device_path, error))?;
     parse_u64(&text).map_err(|message| MetricReadError::provider(path, message))
 }
 
 fn read_f64(path: &Path, device_path: &Path) -> Result<f64, MetricReadError> {
-    let text =
-        read_text(path).map_err(|error| MetricReadError::from_io(path, device_path, error))?;
+    let text = read_text_within(path, device_path)
+        .map_err(|error| MetricReadError::from_io(path, device_path, error))?;
     parse_f64(&text).map_err(|message| MetricReadError::provider(path, message))
 }
 
@@ -298,5 +301,15 @@ mod tests {
         );
         assert!(source.read(&directory).is_err());
         fs::remove_dir_all(directory).expect("remove fixture");
+    }
+
+    #[test]
+    fn maps_permission_denied_without_turning_it_into_zero() {
+        let error = MetricReadError::from_io(
+            Path::new("/fixture/value"),
+            Path::new("/fixture/device"),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(error.reason, UnavailableReason::PermissionDenied);
     }
 }

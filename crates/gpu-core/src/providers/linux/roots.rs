@@ -5,14 +5,18 @@ use std::path::PathBuf;
 /// Injecting these roots keeps sysfs and procfs parsing testable without GPU
 /// hardware and without mounting a synthetic filesystem over the host paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinuxRoots {
-    pub sys: PathBuf,
-    pub proc: PathBuf,
-    pub dev: PathBuf,
+pub(crate) struct LinuxRoots {
+    pub(crate) sys: PathBuf,
+    pub(crate) proc: PathBuf,
+    pub(crate) dev: PathBuf,
 }
 
 impl LinuxRoots {
-    pub fn new(sys: impl Into<PathBuf>, proc: impl Into<PathBuf>, dev: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(
+        sys: impl Into<PathBuf>,
+        proc: impl Into<PathBuf>,
+        dev: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             sys: sys.into(),
             proc: proc.into(),
@@ -20,7 +24,7 @@ impl LinuxRoots {
         }
     }
 
-    pub fn host() -> Self {
+    pub(crate) fn host() -> Self {
         Self::new("/sys", "/proc", "/dev")
     }
 

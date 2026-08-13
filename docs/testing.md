@@ -23,6 +23,7 @@ pnpm native:validate-artifact aarch64-apple-darwin # select the host target
 pnpm build
 pnpm native:test-loader
 pnpm pack:check
+pnpm test:linux-hardware
 ```
 
 `native:test-loader` opens the monitor through the published ESM entry point,
@@ -59,6 +60,8 @@ Core tests use mock providers and injected Linux filesystem roots. They cover:
   percentages;
 - Linux PCI/DRM union discovery, AMD sysfs/hwmon fixtures, device loss, and
   permission/error mapping;
+- bounded PCI/DRM, hwmon, sensor, tile, and GT enumeration, oversized and
+  malformed attributes, integer overflow, and hostile symlink containment;
 - NVML conversions and unavailable-platform behavior without an NVIDIA GPU;
 - IOReport state/energy calculations and AppleSMC key decoding without relying
   on a particular sensor value;
@@ -189,6 +192,52 @@ pnpm test:windows-hardware
 It skips cleanly unless Windows x64 has exactly one Intel and one NVIDIA
 physical adapter with functional PDH and NVML. The parent process enforces the
 exit deadline.
+
+## Observed Linux x64 validation — 2026-08-12
+
+Hardware-tested as a normal user on Bazzite 44, kernel
+7.1.5-ogc5.1.fc44.x86_64, x86_64 glibc 2.43. Tooling was Node 26.7.0, pnpm
+11.19.0, and Rust/Cargo 1.95.0. This host exposed one NVIDIA GeForce RTX 4060 Ti
+and **did not expose an Intel GPU through PCI/DRM sysfs**, so it did not match the
+requested Intel+NVIDIA hybrid lab configuration.
+
+Hardware-tested on the NVIDIA device:
+
+- Linux sysfs merged `card1` and `renderD128` with NVML into one canonical GPU
+  at normalized PCI address `0000:01:00.0`; repeated enumeration, refresh,
+  monitor reopen, concurrent sampling, and a worker thread preserved its stable
+  ID, with no duplicate DRM or NVML device;
+- the NVIDIA 610.43.03 driver loaded NVML 13.610.43.03 dynamically. A sample
+  exposed NVML overall and memory-controller utilization, framebuffer total and
+  used bytes, temperature, power draw/limit/cumulative energy, graphics/SM/
+  memory/video clocks, fan percent/RPM, encoder/decoder utilization, processes,
+  and NVIDIA vendor information. An idle decoder reading of `0` remained an
+  available NVML metric;
+- field-selection diagnostics selected NVML for NVIDIA overall utilization and
+  reported no warnings. Sysfs contributed identity/DRM data but this host did
+  not expose an equivalent attributable NVIDIA hwmon candidate;
+- four pending 60-second streams left `fs.promises.readFile()` completing in
+  1 ms. AbortSignal cancellation, early break, pending-read monitor close,
+  idempotent close, use-after-close rejection, and worker isolation passed;
+  closing four pending streams took 5 ms.
+
+Unavailable on this machine: Intel discovery, i915/Xe correlation and clocks,
+Intel attributable sensors, and Intel device-wide utilization. Device-wide
+Intel utilization remains intentionally unimplemented rather than derived from
+per-process DRM fdinfo. The repeatable hybrid test therefore skipped with the
+exact reason `requires at least one Intel GPU`:
+
+```sh
+pnpm test:linux-hardware
+```
+
+The script runs the full hybrid discovery, provenance, stream, shutdown,
+process-option, refresh/reopen, and worker-thread assertions when both an NVIDIA
+GPU with NVML and an Intel i915/Xe GPU are present. Linux x64 glibc is
+hardware/load-tested here; Linux ARM64 glibc and x64 musl remain compile/load
+coverage in CI, not hardware claims. AMD, multiple NVIDIA GPUs, MIG/vGPU,
+reset, sleep/wake, hot-unplug, and permission-denied real hardware were not
+exercised.
 
 ## Observed Apple Silicon validation — 2026-08-12
 

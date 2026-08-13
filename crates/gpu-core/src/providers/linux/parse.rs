@@ -1,3 +1,4 @@
+use std::fs;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -22,6 +23,20 @@ pub(crate) fn read_text(path: &Path) -> io::Result<String> {
         )
     })?;
     Ok(value.trim_matches(['\0', '\n', '\r', ' ', '\t']).to_owned())
+}
+
+/// Reads a sysfs attribute only after resolving it beneath a trusted canonical
+/// device directory. This keeps test-root injection from accidentally turning
+/// a fixture symlink into an arbitrary host-file read.
+pub(crate) fn read_text_within(path: &Path, canonical_root: &Path) -> io::Result<String> {
+    let canonical = fs::canonicalize(path)?;
+    if !canonical.starts_with(canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "sysfs attribute resolved outside its trusted device directory",
+        ));
+    }
+    read_text(&canonical)
 }
 
 pub(crate) fn parse_u64(value: &str) -> Result<u64, String> {
@@ -107,11 +122,25 @@ pub(crate) fn uevent_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "let-smi-linux-parse-{}-{name}-{nonce}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn parses_hex_and_decimal_sysfs_numbers() {
         assert_eq!(parse_u64("0x1002\n"), Ok(0x1002));
         assert_eq!(parse_u64("4294967296"), Ok(4_294_967_296));
+        assert!(parse_u64("18446744073709551616").is_err());
     }
 
     #[test]
@@ -139,5 +168,48 @@ mod tests {
             numbered_attribute("temperature_input", "temp", "_input"),
             None
         );
+    }
+
+    #[test]
+    fn rejects_oversized_and_non_utf8_sysfs_values() {
+        let oversized = fixture_path("oversized");
+        fs::write(&oversized, vec![b'x'; MAX_SYSFS_VALUE_BYTES as usize + 1])
+            .expect("oversized fixture");
+        assert_eq!(
+            read_text(&oversized).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_file(&oversized).expect("remove oversized fixture");
+
+        let non_utf8 = fixture_path("non-utf8");
+        fs::write(&non_utf8, [0xff]).expect("non-UTF-8 fixture");
+        assert_eq!(
+            read_text(&non_utf8).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_file(&non_utf8).expect("remove non-UTF-8 fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_attributes_outside_the_trusted_device_directory() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_path("root");
+        let device = root.join("device");
+        let outside = fixture_path("outside");
+        fs::create_dir_all(&device).expect("device fixture");
+        fs::write(&outside, "42\n").expect("outside fixture");
+        symlink(&outside, device.join("value")).expect("hostile fixture symlink");
+
+        assert_eq!(
+            read_text_within(&device.join("value"), &device)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+
+        fs::remove_file(&outside).expect("remove outside fixture");
+        fs::remove_dir_all(&root).expect("remove root fixture");
     }
 }

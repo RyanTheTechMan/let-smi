@@ -30,7 +30,7 @@ impl Default for DiagnosticState {
     }
 }
 
-pub struct LinuxSysfsProvider {
+pub(crate) struct LinuxSysfsProvider {
     roots: LinuxRoots,
     include_software_adapters: bool,
     records: RwLock<BTreeMap<String, LinuxDeviceRecord>>,
@@ -38,7 +38,7 @@ pub struct LinuxSysfsProvider {
 }
 
 impl LinuxSysfsProvider {
-    pub fn new(roots: LinuxRoots, include_software_adapters: bool) -> Self {
+    pub(crate) fn new(roots: LinuxRoots, include_software_adapters: bool) -> Self {
         Self {
             roots,
             include_software_adapters,
@@ -198,7 +198,7 @@ impl TelemetryProvider for LinuxSysfsProvider {
 mod tests {
     use super::*;
     use crate::correlation::correlate;
-    use crate::model::{MetricValue, UnavailableReason};
+    use crate::model::{MetricKey, MetricValue, UnavailableReason};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -286,5 +286,26 @@ mod tests {
             .expect("sample");
         assert_eq!(sample.unavailable.len(), 1);
         assert_eq!(sample.unavailable[0].reason, UnavailableReason::DeviceLost);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hostile_metric_symlink_is_not_probed_as_gpu_telemetry() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let outside = fixture.root.join("outside-metric");
+        fs::write(&outside, "55\n").expect("outside metric fixture");
+        fs::remove_file(fixture.device.join("gpu_busy_percent"))
+            .expect("remove in-device metric fixture");
+        symlink(&outside, fixture.device.join("gpu_busy_percent")).expect("hostile metric symlink");
+
+        let provider = LinuxSysfsProvider::new(fixture.roots.clone(), false);
+        let gpu = fixture.gpu(&provider);
+        assert!(
+            !provider
+                .capabilities(&gpu)
+                .supports(MetricKey::UtilizationOverall)
+        );
     }
 }

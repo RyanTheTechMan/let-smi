@@ -11,7 +11,30 @@ launchers. It never invokes `nvidia-smi`, WMI command-line tools, PowerShell,
 `amd-smi`, `intel_gpu_top`, `powermetrics`, `ldd`, or another executable.
 Windows telemetry uses DXGI, D3DKMT, PDH, and dynamically loaded driver APIs.
 The repository check `pnpm subprocess:check` scans every runtime source file and
-the native package loader for prohibited launch paths.
+the native package loader for prohibited launch paths and known telemetry/system
+inspection executables, including `lspci`, `lsmod`, `modinfo`, and `sensors`.
+
+## Linux filesystem and loader boundaries
+
+Linux inventory has explicit entry limits for PCI devices, DRM nodes, hwmon
+directories and attributes, Intel tile/GT directories, and metric candidates.
+Attribute contents are limited to 64 KiB, must be UTF-8, and use strict checked
+numeric parsing. Canonical PCI/DRM targets must remain under the selected sysfs
+root; telemetry and attributable hwmon paths must remain under the canonical GPU
+device. Escaping fixture symlinks are ignored or mapped to permission denial.
+Disappearing devices and malformed or oversized attributes remain unavailable
+instead of becoming zero.
+
+`LinuxRoots` is crate-internal test injection. Production callers cannot choose
+filesystem roots through the Node API or environment variables. The provider
+never writes sysfs or device files.
+
+On Linux, NVML is opened by the standard dynamic loader as
+`libnvidia-ml.so.1`. The implementation does not call `ldconfig` or hard-code a
+distribution library directory because both would break normal container and
+driver-mount behavior. As with other native programs, a deployment that permits
+untrusted control of its loader environment can redirect optional library
+resolution and must secure that environment at process launch.
 
 ## Windows DLL loading
 
@@ -53,7 +76,7 @@ a maximum of three resize retries, and bounded UTF-16 pointer/terminator
 validation. Malformed layouts return `provider-error`; they do not create
 unchecked slices or panic.
 
-Driver- and OS-reported device, fan, process, encoder-session, channel, state,
+Driver- and OS-reported strings, device, fan, process, encoder-session, channel, state,
 metric, diagnostic, and JSON collection sizes are capped before or immediately
 after the corresponding provider boundary. JavaScript validates native
 collection lengths, object property counts, numeric ranges, and unknown option

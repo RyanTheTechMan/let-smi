@@ -25,6 +25,7 @@
     "native:prepublish:dry": "pnpm --dir packages/gpu native:prepublish --dry-run",
     "native:test-loader": "node scripts/test-native-loader.mjs",
     "test:windows-hardware": "node scripts/test-windows-process-exit.mjs",
+    "test:linux-hardware": "node scripts/test-linux-process-exit.mjs",
     "native:validate-artifact": "node scripts/validate-native-artifact.mjs",
     "typecheck": "pnpm --filter let-smi typecheck",
     "test": "pnpm --filter let-smi test",

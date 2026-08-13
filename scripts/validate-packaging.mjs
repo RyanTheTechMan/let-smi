@@ -93,6 +93,7 @@ for (const requiredScript of [
   "native:config:check",
   "native:prepublish",
   "native:test-loader",
+  "test:linux-hardware",
   "subprocess:check",
 ]) {
   assert(

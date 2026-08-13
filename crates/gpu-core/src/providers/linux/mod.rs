@@ -5,8 +5,8 @@ mod parse;
 mod provider;
 mod roots;
 
-pub use provider::LinuxSysfsProvider;
-pub use roots::LinuxRoots;
+pub(crate) use provider::LinuxSysfsProvider;
+pub(crate) use roots::LinuxRoots;
 
 use crate::monitor::MonitorOptions;
 use crate::provider::Provider;
