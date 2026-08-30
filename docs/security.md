@@ -124,3 +124,12 @@ RustSec reports one maintenance warning for the unmaintained `paste` procedural
 macro, transitively used by macOS-only `metal`; it is not a vulnerability and
 has no Windows runtime path. Workflow static analysis reports no findings in
 pedantic offline mode.
+
+The initial npm publication uses a seven-day, package-only granular token
+stored in the protected GitHub `npm` environment because npm cannot configure a
+trusted publisher before a package exists. The token is revoked immediately
+after all root/platform packages are connected to `release.yml` through npm
+trusted publishing. Later releases use GitHub OIDC and publish provenance
+without a long-lived registry credential. A post-publish matrix installs the
+actual registry package on every supported target before the matching GitHub
+release is created.

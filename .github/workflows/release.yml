@@ -82,6 +82,9 @@ jobs:
           registry-url: https://registry.npmjs.org/
           package-manager-cache: false
 
+      - name: Install pinned npm publishing client
+        run: npm install --global npm@11.19.0
+
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
@@ -122,15 +125,96 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/release-version.mjs "$RELEASE_TAG"
 
-      - name: Publish root and platform packages with OIDC
+      - name: Publish root and platform packages
         env:
+          # This secret is required only to create the packages in the initial
+          # release. Once npm trusted publishing is configured, OIDC is used
+          # and the deleted secret expands to an empty value.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
           NPM_CONFIG_TAG: ${{ steps.version.outputs.npm-tag }}
         run: npm publish ./packages/gpu --access public
 
+  verify:
+    name: Verify published package / ${{ matrix.settings.name }}
+    needs: publish
+    runs-on: ${{ matrix.settings.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - name: macOS arm64
+            os: macos-15
+            node-arch: arm64
+            musl: false
+          - name: macOS x64
+            os: macos-15-intel
+            node-arch: x64
+            musl: false
+          - name: Windows x64
+            os: windows-2022
+            node-arch: x64
+            musl: false
+          - name: Linux arm64 glibc
+            os: ubuntu-24.04-arm
+            node-arch: arm64
+            musl: false
+          - name: Linux x64 glibc
+            os: ubuntu-22.04
+            node-arch: x64
+            musl: false
+          - name: Linux x64 musl
+            os: ubuntu-22.04
+            node-arch: x64
+            musl: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        if: ${{ !matrix.settings.musl }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.23.2"
+          architecture: ${{ matrix.settings.node-arch }}
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Verify package from npm
+        if: ${{ !matrix.settings.musl }}
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/test-published-package.mjs "${RELEASE_TAG#v}"
+
+      - name: Verify package from npm on musl
+        if: matrix.settings.musl
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          WORKSPACE: ${{ github.workspace }}
+        run: >-
+          docker run --rm
+          --volume "$WORKSPACE:/workspace:ro"
+          --workdir /workspace
+          --env RELEASE_VERSION="${RELEASE_TAG#v}"
+          node:22.23.2-alpine@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c
+          node scripts/test-published-package.mjs
+
+  release:
+    name: Create GitHub release
+    needs: verify
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: >-

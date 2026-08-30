@@ -58,7 +58,13 @@ for (const directory of directories) {
   }
   manifest.publishConfig = {
     ...manifest.publishConfig,
+    access: "public",
     provenance: true,
+    registry: "https://registry.npmjs.org/",
+  };
+  manifest.repository = {
+    type: "git",
+    url: publicManifest.repository.url,
   };
   await writeFile(
     manifestPath,

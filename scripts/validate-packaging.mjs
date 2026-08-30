@@ -19,7 +19,7 @@ assertEqual(packageManifest.name, "let-smi", "public package name");
 assertEqual(packageManifest.license, "MIT", "public package license");
 assertEqual(
   packageManifest.repository?.url,
-  "git+https://github.com/ryanthetechman/let-smi.git",
+  "git+https://github.com/RyanTheTechMan/let-smi.git",
   "repository URL required by npm trusted publishing",
 );
 assertEqual(packageManifest.napi?.binaryName, "let-smi", "NAPI binary name");
@@ -154,6 +154,23 @@ assert(
 assert(
   nativeWorkflow.includes("tool: cargo-zigbuild@0.23.0"),
   "native workflow must pin cargo-zigbuild",
+);
+
+const releaseWorkflow = await readFile(
+  resolve(repositoryRoot, ".github/workflows/release.yml"),
+  "utf8",
+);
+assert(
+  releaseWorkflow.includes("npm install --global npm@11.19.0"),
+  "release workflow must pin the npm trusted-publishing client",
+);
+assert(
+  releaseWorkflow.includes("NPM_BOOTSTRAP_TOKEN"),
+  "release workflow must support the one-time initial-package bootstrap",
+);
+assert(
+  releaseWorkflow.includes("test-published-package.mjs"),
+  "release workflow must verify installation from the public registry",
 );
 
 console.log(
