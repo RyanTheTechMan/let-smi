@@ -64,7 +64,7 @@ jobs:
     timeout-minutes: 20
     environment: npm
     permissions:
-      contents: write # Create the matching GitHub release after publish.
+      contents: read
       id-token: write # Authenticate npm trusted publishing without a token.
     steps:
       - name: Check out repository
@@ -133,7 +133,20 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
           NPM_CONFIG_TAG: ${{ steps.version.outputs.npm-tag }}
-        run: npm publish ./packages/gpu --access public
+        shell: bash
+        run: |
+          for package_dir in \
+            packages/gpu/npm/darwin-arm64 \
+            packages/gpu/npm/darwin-x64 \
+            packages/gpu/npm/win32-x64-msvc \
+            packages/gpu/npm/linux-arm64-gnu \
+            packages/gpu/npm/linux-x64-gnu \
+            packages/gpu/npm/linux-x64-musl
+          do
+            npm publish "$package_dir" --access public --ignore-scripts
+          done
+
+          npm publish ./packages/gpu --access public --ignore-scripts
 
   verify:
     name: Verify published package / ${{ matrix.settings.name }}

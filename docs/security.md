@@ -133,3 +133,10 @@ trusted publishing. Later releases use GitHub OIDC and publish provenance
 without a long-lived registry credential. A post-publish matrix installs the
 actual registry package on every supported target before the matching GitHub
 release is created.
+
+The release workflow publishes only the six platform-package directories that
+were assembled and validated in the same job, followed by the root package.
+Lifecycle scripts are disabled for these publish commands so the NAPI-RS
+pre-publish helper cannot independently publish artifacts or create a GitHub
+release; the workflow's post-publication verification and release jobs own
+those actions.

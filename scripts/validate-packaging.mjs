@@ -169,6 +169,15 @@ assert(
   "release workflow must support the one-time initial-package bootstrap",
 );
 assert(
+  releaseWorkflow.includes(
+    'npm publish "$package_dir" --access public --ignore-scripts',
+  ) &&
+    releaseWorkflow.includes(
+      "npm publish ./packages/gpu --access public --ignore-scripts",
+    ),
+  "release workflow must publish validated platform packages before the root package without lifecycle hooks",
+);
+assert(
   releaseWorkflow.includes("test-published-package.mjs"),
   "release workflow must verify installation from the public registry",
 );
