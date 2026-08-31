@@ -116,8 +116,21 @@ jobs:
             pnpm native:validate-artifact "$target"
           done
 
-      - name: Validate prepublish plan
-        run: pnpm native:prepublish:dry
+      - name: Validate publishable package contents
+        shell: bash
+        run: |
+          for package_dir in \
+            packages/gpu/npm/darwin-arm64 \
+            packages/gpu/npm/darwin-x64 \
+            packages/gpu/npm/win32-x64-msvc \
+            packages/gpu/npm/linux-arm64-gnu \
+            packages/gpu/npm/linux-x64-gnu \
+            packages/gpu/npm/linux-x64-musl
+          do
+            npm pack "$package_dir" --dry-run --json --ignore-scripts >/dev/null
+          done
+
+          npm pack ./packages/gpu --dry-run --json --ignore-scripts >/dev/null
 
       - name: Resolve npm distribution tag
         id: version

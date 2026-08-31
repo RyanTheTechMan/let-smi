@@ -37,8 +37,10 @@ for (const directory of directories) {
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const expected = expectedPackages.get(directory.name);
   const binaryName = `let-smi.${directory.name}.node`;
+  const generatedPackageName = `let-smi-${directory.name}`;
+  const publicPackageName = `@ryanthetechman/${generatedPackageName}`;
   if (
-    manifest.name !== `let-smi-${directory.name}` ||
+    manifest.name !== generatedPackageName ||
     manifest.version !== publicManifest.version ||
     manifest.main !== binaryName ||
     !sameStringArray(manifest.files, [binaryName]) ||
@@ -56,6 +58,7 @@ for (const directory of directories) {
   ) {
     throw new Error(`Unexpected native package manifest: ${manifestPath}`);
   }
+  manifest.name = publicPackageName;
   manifest.publishConfig = {
     ...manifest.publishConfig,
     access: "public",
@@ -72,6 +75,11 @@ for (const directory of directories) {
     "utf8",
   );
   await writeFile(join(path, "LICENSE"), license, "utf8");
+  await writeFile(
+    join(path, "README.md"),
+    `# \`${publicPackageName}\`\n\nPrebuilt native addon for \`let-smi\` on \`${directory.name}\`.\n`,
+    "utf8",
+  );
 }
 
 console.log(

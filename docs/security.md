@@ -140,3 +140,9 @@ Lifecycle scripts are disabled for these publish commands so the NAPI-RS
 pre-publish helper cannot independently publish artifacts or create a GitHub
 release; the workflow's post-publication verification and release jobs own
 those actions.
+
+Native optional packages use the npm account scope
+`@ryanthetechman/let-smi-*`, while consumers continue to install the unscoped
+`let-smi` root package. The scope prevents third-party namespace collisions and
+avoids npm's unscoped package-name spam heuristics for generated platform
+suffixes.

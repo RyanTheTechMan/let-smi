@@ -6,12 +6,12 @@ settings:
 
 overrides:
   esbuild: 0.28.2
-  let-smi-darwin-arm64: link:scripts/fixtures/native-package-placeholder
-  let-smi-darwin-x64: link:scripts/fixtures/native-package-placeholder
-  let-smi-linux-arm64-gnu: link:scripts/fixtures/native-package-placeholder
-  let-smi-linux-x64-gnu: link:scripts/fixtures/native-package-placeholder
-  let-smi-linux-x64-musl: link:scripts/fixtures/native-package-placeholder
-  let-smi-win32-x64-msvc: link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-darwin-arm64": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-darwin-x64": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-linux-arm64-gnu": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-linux-x64-gnu": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-linux-x64-musl": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-win32-x64-msvc": link:scripts/fixtures/native-package-placeholder
 
 importers:
   .:
@@ -62,22 +62,22 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@types/node@22.20.1)(vite@8.2.1(@types/node@22.20.1)(esbuild@0.28.2))
     optionalDependencies:
-      let-smi-darwin-arm64:
+      "@ryanthetechman/let-smi-darwin-arm64":
         specifier: link:../../scripts/fixtures/native-package-placeholder
         version: link:../../scripts/fixtures/native-package-placeholder
-      let-smi-darwin-x64:
+      "@ryanthetechman/let-smi-darwin-x64":
         specifier: link:../../scripts/fixtures/native-package-placeholder
         version: link:../../scripts/fixtures/native-package-placeholder
-      let-smi-linux-arm64-gnu:
+      "@ryanthetechman/let-smi-linux-arm64-gnu":
         specifier: link:../../scripts/fixtures/native-package-placeholder
         version: link:../../scripts/fixtures/native-package-placeholder
-      let-smi-linux-x64-gnu:
+      "@ryanthetechman/let-smi-linux-x64-gnu":
         specifier: link:../../scripts/fixtures/native-package-placeholder
         version: link:../../scripts/fixtures/native-package-placeholder
-      let-smi-linux-x64-musl:
+      "@ryanthetechman/let-smi-linux-x64-musl":
         specifier: link:../../scripts/fixtures/native-package-placeholder
         version: link:../../scripts/fixtures/native-package-placeholder
-      let-smi-win32-x64-msvc:
+      "@ryanthetechman/let-smi-win32-x64-msvc":
         specifier: link:../../scripts/fixtures/native-package-placeholder
         version: link:../../scripts/fixtures/native-package-placeholder
 

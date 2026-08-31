@@ -7,12 +7,12 @@ const rootManifest = await readJson("package.json");
 const packageManifest = await readJson("packages/gpu/package.json");
 
 const targetPackages = new Map([
-  ["aarch64-apple-darwin", "let-smi-darwin-arm64"],
-  ["x86_64-apple-darwin", "let-smi-darwin-x64"],
-  ["x86_64-pc-windows-msvc", "let-smi-win32-x64-msvc"],
-  ["aarch64-unknown-linux-gnu", "let-smi-linux-arm64-gnu"],
-  ["x86_64-unknown-linux-gnu", "let-smi-linux-x64-gnu"],
-  ["x86_64-unknown-linux-musl", "let-smi-linux-x64-musl"],
+  ["aarch64-apple-darwin", "@ryanthetechman/let-smi-darwin-arm64"],
+  ["x86_64-apple-darwin", "@ryanthetechman/let-smi-darwin-x64"],
+  ["x86_64-pc-windows-msvc", "@ryanthetechman/let-smi-win32-x64-msvc"],
+  ["aarch64-unknown-linux-gnu", "@ryanthetechman/let-smi-linux-arm64-gnu"],
+  ["x86_64-unknown-linux-gnu", "@ryanthetechman/let-smi-linux-x64-gnu"],
+  ["x86_64-unknown-linux-musl", "@ryanthetechman/let-smi-linux-x64-musl"],
 ]);
 
 assertEqual(packageManifest.name, "let-smi", "public package name");
@@ -176,6 +176,15 @@ assert(
       "npm publish ./packages/gpu --access public --ignore-scripts",
     ),
   "release workflow must publish validated platform packages before the root package without lifecycle hooks",
+);
+assert(
+  releaseWorkflow.includes(
+    'npm pack "$package_dir" --dry-run --json --ignore-scripts',
+  ) &&
+    releaseWorkflow.includes(
+      "npm pack ./packages/gpu --dry-run --json --ignore-scripts",
+    ),
+  "release workflow must dry-run package contents without lifecycle hooks",
 );
 assert(
   releaseWorkflow.includes("test-published-package.mjs"),

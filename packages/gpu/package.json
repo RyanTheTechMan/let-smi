@@ -54,12 +54,12 @@
     ]
   },
   "optionalDependencies": {
-    "let-smi-darwin-arm64": "0.1.0",
-    "let-smi-darwin-x64": "0.1.0",
-    "let-smi-linux-arm64-gnu": "0.1.0",
-    "let-smi-linux-x64-gnu": "0.1.0",
-    "let-smi-linux-x64-musl": "0.1.0",
-    "let-smi-win32-x64-msvc": "0.1.0"
+    "@ryanthetechman/let-smi-darwin-arm64": "0.1.0",
+    "@ryanthetechman/let-smi-darwin-x64": "0.1.0",
+    "@ryanthetechman/let-smi-linux-arm64-gnu": "0.1.0",
+    "@ryanthetechman/let-smi-linux-x64-gnu": "0.1.0",
+    "@ryanthetechman/let-smi-linux-x64-musl": "0.1.0",
+    "@ryanthetechman/let-smi-win32-x64-msvc": "0.1.0"
   },
   "scripts": {
     "build": "tsup",

@@ -9,9 +9,9 @@ overrides:
   # Keep the transitive Vite/tsup development server clear of
   # GHSA-g7r4-m6w7-qqqr on Windows.
   esbuild: 0.28.2
-  let-smi-darwin-arm64: link:scripts/fixtures/native-package-placeholder
-  let-smi-darwin-x64: link:scripts/fixtures/native-package-placeholder
-  let-smi-linux-arm64-gnu: link:scripts/fixtures/native-package-placeholder
-  let-smi-linux-x64-gnu: link:scripts/fixtures/native-package-placeholder
-  let-smi-linux-x64-musl: link:scripts/fixtures/native-package-placeholder
-  let-smi-win32-x64-msvc: link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-darwin-arm64": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-darwin-x64": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-linux-arm64-gnu": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-linux-x64-gnu": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-linux-x64-musl": link:scripts/fixtures/native-package-placeholder
+  "@ryanthetechman/let-smi-win32-x64-msvc": link:scripts/fixtures/native-package-placeholder

@@ -4,6 +4,7 @@ const { existsSync } = require("node:fs");
 const { join } = require("node:path");
 
 const BINARY_BASENAME = "let-smi";
+const PLATFORM_PACKAGE_SCOPE = "@ryanthetechman";
 const MAX_LOADER_ERROR_LENGTH = 1_024;
 
 function safeErrorMessage(error) {
@@ -85,7 +86,7 @@ function loadNativeBinding() {
       }
     }
 
-    const packageName = `${BINARY_BASENAME}-${target}`;
+    const packageName = `${PLATFORM_PACKAGE_SCOPE}/${BINARY_BASENAME}-${target}`;
     try {
       return normalizeBinding(require(packageName), packageName);
     } catch (error) {

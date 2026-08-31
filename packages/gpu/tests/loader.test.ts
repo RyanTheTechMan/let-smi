@@ -42,12 +42,12 @@ describe("native loader", () => {
       throw new Error("optionalDependencies is not an object");
     }
     expect(Object.keys(optionalDependencies).sort()).toEqual([
-      "let-smi-darwin-arm64",
-      "let-smi-darwin-x64",
-      "let-smi-linux-arm64-gnu",
-      "let-smi-linux-x64-gnu",
-      "let-smi-linux-x64-musl",
-      "let-smi-win32-x64-msvc",
+      "@ryanthetechman/let-smi-darwin-arm64",
+      "@ryanthetechman/let-smi-darwin-x64",
+      "@ryanthetechman/let-smi-linux-arm64-gnu",
+      "@ryanthetechman/let-smi-linux-x64-gnu",
+      "@ryanthetechman/let-smi-linux-x64-musl",
+      "@ryanthetechman/let-smi-win32-x64-msvc",
     ]);
   });
 
