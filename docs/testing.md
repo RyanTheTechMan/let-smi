@@ -249,3 +249,14 @@ derived utilization, power, and energy from IOReport plus an estimated
 temperature from 64 AppleSMC GPU die sensors. Public ESM and CommonJS loading,
 the arm64 Mach-O artifact check, the complete Rust/NAPI test suite, and strict
 Clippy all passed without `sudo` or an external executable.
+
+## Registry publication checks
+
+Registry smoke tests wait for the root package and every platform-specific
+optional package to become installable before testing ESM, CommonJS, and native
+loading. This accounts for npm's independent publish-time scan of each package;
+an accepted publication can remain unavailable for several minutes while that
+scan completes.
+
+The `Verify published release` GitHub workflow can rerun this registry matrix
+for an already-published version without rebuilding or republishing it.

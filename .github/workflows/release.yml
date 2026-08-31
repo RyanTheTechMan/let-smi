@@ -165,7 +165,9 @@ jobs:
     name: Verify published package / ${{ matrix.settings.name }}
     needs: publish
     runs-on: ${{ matrix.settings.os }}
-    timeout-minutes: 15
+    # npm scans every newly published package before it becomes installable.
+    # The root and native optional packages may clear that scan at different times.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:

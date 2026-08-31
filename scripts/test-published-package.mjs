@@ -10,21 +10,30 @@ if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version ?? "")) {
   throw new Error("a valid release version is required");
 }
 
+const npmCommand =
+  process.platform === "win32"
+    ? {
+        executable: process.env.ComSpec ?? "cmd.exe",
+        prefixArgs: ["/d", "/s", "/c", "npm.cmd"],
+      }
+    : { executable: "npm", prefixArgs: [] };
 const packageSpec = `let-smi@${version}`;
-const deadline = Date.now() + 5 * 60_000;
-while (true) {
-  const visible = runNpm(["view", packageSpec, "version", "--json"], {
-    allowFailure: true,
-    timeout: 30_000,
-  });
-  if (visible.status === 0) break;
-  if (Date.now() >= deadline) {
-    throw new Error(
-      `${packageSpec} did not become visible within five minutes`,
-    );
-  }
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 10_000));
-}
+const expectedManifest = JSON.parse(
+  await readFile(
+    new URL("../packages/gpu/package.json", import.meta.url),
+    "utf8",
+  ),
+);
+const nativePackageSpecs = Object.entries(
+  expectedManifest.optionalDependencies ?? {},
+).map(([name, dependencyVersion]) => `${name}@${dependencyVersion}`);
+assert.equal(
+  nativePackageSpecs.length,
+  6,
+  "the release smoke test must cover every native package",
+);
+
+await waitForPackages([packageSpec, ...nativePackageSpecs], 20 * 60_000);
 
 const directory = await mkdtemp(join(tmpdir(), "let-smi-registry-"));
 await writeFile(
@@ -83,15 +92,20 @@ console.log(
 );
 
 function runNpm(args, options = {}) {
-  const result = spawnSync("npm", args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      npm_config_registry: "https://registry.npmjs.org/",
+  const result = spawnSync(
+    npmCommand.executable,
+    [...npmCommand.prefixArgs, ...args],
+    {
+      cwd: options.cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        npm_config_registry: "https://registry.npmjs.org/",
+      },
+      timeout: options.timeout,
+      windowsHide: true,
     },
-    timeout: options.timeout,
-  });
+  );
   if (result.error) throw result.error;
   if (!options.allowFailure && result.status !== 0) {
     throw new Error(
@@ -99,4 +113,29 @@ function runNpm(args, options = {}) {
     );
   }
   return result;
+}
+
+async function waitForPackages(packageSpecs, timeoutMs) {
+  const pending = new Set(packageSpecs);
+  const deadline = Date.now() + timeoutMs;
+  while (pending.size > 0) {
+    for (const pendingPackage of pending) {
+      const visible = runNpm(
+        ["view", pendingPackage, "version", "--json", "--prefer-online"],
+        {
+          allowFailure: true,
+          timeout: 30_000,
+        },
+      );
+      if (visible.status === 0) pending.delete(pendingPackage);
+    }
+    if (pending.size === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `npm packages did not become visible within ${String(timeoutMs / 60_000)} minutes: ${[...pending].join(", ")}`,
+      );
+    }
+    console.log(`Waiting for npm publication scan: ${[...pending].join(", ")}`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 15_000));
+  }
 }
