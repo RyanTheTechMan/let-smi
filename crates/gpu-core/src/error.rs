@@ -3,7 +3,7 @@ use thiserror::Error;
 
 pub type Result<T, E = GpuError> = std::result::Result<T, E>;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum GpuError {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),

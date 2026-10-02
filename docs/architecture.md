@@ -86,11 +86,13 @@ to the worker cover one-shot samples, subscriptions, refresh, cancellation, and
 shutdown.
 
 Counter-based providers retain baselines inside their provider state. A one-shot
-sample with a positive `windowMs` retries a `first-sample` result after that
-window. Continuous subscriptions sample at the fastest due interval and deliver
+sample with a positive `windowMs` schedules a retry of a `first-sample` result
+after that window, continuing to serve other work while it waits. Continuous subscriptions sample at the fastest due interval and deliver
 through a single-value slot. Slow consumers therefore receive the latest value
-instead of causing an unbounded queue. Nearby listeners for the same GPU and
-process option share a recent native poll.
+instead of causing an unbounded queue. Nearby listeners and one-shot requests share scalar native polls by GPU.
+Process enrichment runs separately and cannot advance scalar baselines. Batch
+subscriptions use the same slots and sampler, collecting every current GPU in
+one native cycle. PDH collects once for the whole adapter batch.
 
 `SampleSubscription::next` is a Rust `Future` backed by a stored waker; it does
 not occupy a libuv worker while waiting. Cancellation and monitor shutdown
@@ -116,8 +118,8 @@ globally.
 The boundary is deliberately data-oriented:
 
 - `listGpus()` returns canonical descriptors;
-- `sampleGpu()` returns a snapshot;
-- `subscribeGpu()` returns an object with `next()` and `cancel()`;
+- `sampleGpu()` returns a snapshot; `sampleAll()` returns a monitor snapshot;
+- `subscribeGpu()` and `subscribeAll()` return objects with `next()` and `cancel()`;
 - `vendorInfo()`, `diagnostics()`, `refresh()`, and `close()` are explicit.
 
 Open, one-shot sample, refresh, diagnostics, vendor information, and explicit

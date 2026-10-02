@@ -1,7 +1,7 @@
 use crate::error::{GpuError, Result};
 use crate::model::{SampleRequest, UnavailableReason};
 use crate::monitor::MonitorInner;
-use crate::snapshot::GpuSnapshot;
+use crate::snapshot::{GpuDeviceSnapshot, GpuMonitorSnapshot, GpuSnapshot};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::future::Future;
@@ -37,13 +37,13 @@ impl Default for WatchOptions {
 
 enum Command {
     Sample {
-        device_id: String,
+        device_id: Option<String>,
         request: SampleRequest,
-        response: SyncSender<Result<GpuSnapshot>>,
+        response: SyncSender<Result<GpuMonitorSnapshot>>,
     },
     Subscribe {
         id: u64,
-        device_id: String,
+        device_id: Option<String>,
         options: WatchOptions,
         slot: Arc<LatestSlot>,
     },
@@ -59,7 +59,7 @@ enum Command {
 }
 
 struct SubscriptionEntry {
-    device_id: String,
+    device_id: Option<String>,
     options: WatchOptions,
     next_due: Instant,
     slot: Arc<LatestSlot>,
@@ -69,7 +69,7 @@ struct SubscriptionEntry {
 struct LatestState {
     sequence: u64,
     delivered_sequence: u64,
-    latest: Option<GpuSnapshot>,
+    latest: Option<GpuMonitorSnapshot>,
     error: Option<String>,
     closed: bool,
     waiter: Option<Waker>,
@@ -81,7 +81,7 @@ struct LatestSlot {
 }
 
 impl LatestSlot {
-    fn publish(&self, snapshot: GpuSnapshot) {
+    fn publish(&self, snapshot: GpuMonitorSnapshot) {
         let waiter = {
             let mut state = self.state.lock();
             if state.closed {
@@ -138,7 +138,7 @@ impl LatestSlot {
         self.state.lock().waiter = None;
     }
 
-    fn poll_next(&self, context: &mut Context<'_>) -> Poll<Result<Option<GpuSnapshot>>> {
+    fn poll_next(&self, context: &mut Context<'_>) -> Poll<Result<Option<GpuMonitorSnapshot>>> {
         let mut state = self.state.lock();
         if state.closed {
             return Poll::Ready(Ok(None));
@@ -171,7 +171,7 @@ pub struct SampleSubscription {
 }
 
 impl SampleSubscription {
-    pub fn next_async(&self) -> Result<NextSampleFuture> {
+    fn next_batch_async(&self) -> Result<NextBatchSampleFuture> {
         self.next_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| {
@@ -179,10 +179,16 @@ impl SampleSubscription {
                     "only one next() call may be in flight per native subscription".into(),
                 )
             })?;
-        Ok(NextSampleFuture {
+        Ok(NextBatchSampleFuture {
             slot: Arc::clone(&self.slot),
             next_in_flight: Arc::clone(&self.next_in_flight),
             completed: false,
+        })
+    }
+
+    pub fn next_async(&self) -> Result<NextSampleFuture> {
+        Ok(NextSampleFuture {
+            inner: self.next_batch_async()?,
         })
     }
 
@@ -202,14 +208,14 @@ impl Drop for SampleSubscription {
     }
 }
 
-pub struct NextSampleFuture {
+pub struct NextBatchSampleFuture {
     slot: Arc<LatestSlot>,
     next_in_flight: Arc<AtomicBool>,
     completed: bool,
 }
 
-impl Future for NextSampleFuture {
-    type Output = Result<Option<GpuSnapshot>>;
+impl Future for NextBatchSampleFuture {
+    type Output = Result<Option<GpuMonitorSnapshot>>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -224,12 +230,53 @@ impl Future for NextSampleFuture {
     }
 }
 
-impl Drop for NextSampleFuture {
+impl Drop for NextBatchSampleFuture {
     fn drop(&mut self) {
         if !self.completed {
             self.slot.clear_waiter();
             self.next_in_flight.store(false, Ordering::Release);
         }
+    }
+}
+
+pub struct BatchSampleSubscription {
+    inner: SampleSubscription,
+}
+
+impl BatchSampleSubscription {
+    pub fn next_async(&self) -> Result<NextBatchSampleFuture> {
+        self.inner.next_batch_async()
+    }
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+}
+
+pub struct NextSampleFuture {
+    inner: NextBatchSampleFuture,
+}
+
+impl Future for NextSampleFuture {
+    type Output = Result<Option<GpuSnapshot>>;
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().inner)
+            .poll(context)
+            .map(|result| {
+                result.and_then(|batch| {
+                    batch
+                        .map(|batch| {
+                            batch
+                                .gpus
+                                .into_iter()
+                                .next()
+                                .map(|gpu| gpu.snapshot)
+                                .ok_or_else(|| {
+                                    GpuError::Internal("single-device delivery was empty".into())
+                                })
+                        })
+                        .transpose()
+                })
+            })
     }
 }
 
@@ -264,6 +311,23 @@ impl SamplerHub {
     }
 
     pub(crate) fn sample(&self, device_id: String, request: SampleRequest) -> Result<GpuSnapshot> {
+        self.sample_target(Some(device_id), request)?
+            .gpus
+            .into_iter()
+            .next()
+            .map(|gpu| gpu.snapshot)
+            .ok_or_else(|| GpuError::Internal("single-device sample was empty".into()))
+    }
+
+    pub(crate) fn sample_all(&self, request: SampleRequest) -> Result<GpuMonitorSnapshot> {
+        self.sample_target(None, request)
+    }
+
+    fn sample_target(
+        &self,
+        device_id: Option<String>,
+        request: SampleRequest,
+    ) -> Result<GpuMonitorSnapshot> {
         if self.stopped.load(Ordering::Acquire) {
             return Err(GpuError::MonitorClosed);
         }
@@ -279,6 +343,20 @@ impl SamplerHub {
     pub(crate) fn subscribe(
         &self,
         device_id: String,
+        options: WatchOptions,
+    ) -> Result<SampleSubscription> {
+        self.subscribe_target(Some(device_id), options)
+    }
+
+    pub(crate) fn subscribe_all(&self, options: WatchOptions) -> Result<BatchSampleSubscription> {
+        Ok(BatchSampleSubscription {
+            inner: self.subscribe_target(None, options)?,
+        })
+    }
+
+    fn subscribe_target(
+        &self,
+        device_id: Option<String>,
         mut options: WatchOptions,
     ) -> Result<SampleSubscription> {
         if self.stopped.load(Ordering::Acquire) {
@@ -446,46 +524,52 @@ impl Drop for SamplerHub {
     }
 }
 
+struct PendingSample {
+    device_id: Option<String>,
+    request: SampleRequest,
+    response: SyncSender<Result<GpuMonitorSnapshot>>,
+    ready_at: Option<Instant>,
+}
+
+struct CachedSnapshot {
+    collected_at: Instant,
+    snapshot: GpuSnapshot,
+    processes_collected: bool,
+}
+
 fn run_sampler(
     monitor: Arc<MonitorInner>,
     receiver: Receiver<Command>,
     stop_requested: Arc<AtomicBool>,
 ) {
     let mut subscriptions: HashMap<u64, SubscriptionEntry> = HashMap::new();
-    let mut latest_snapshots: HashMap<(String, bool), (Instant, GpuSnapshot)> = HashMap::new();
-
+    let mut pending = Vec::new();
+    let mut cache = HashMap::new();
     loop {
         subscriptions.retain(|_, entry| !entry.slot.is_closed());
-        latest_snapshots.retain(|(device_id, include_processes), _| {
-            subscriptions.values().any(|entry| {
-                &entry.device_id == device_id
-                    && entry.options.include_processes == *include_processes
-            })
-        });
         if stop_requested.load(Ordering::Acquire) {
             close_subscriptions(&mut subscriptions);
             monitor.shutdown_providers();
             break;
         }
-        if subscriptions
-            .values()
-            .any(|entry| entry.next_due <= Instant::now())
-        {
-            sample_due_subscriptions(&monitor, &mut subscriptions, &mut latest_snapshots);
-        }
+        deliver_due(&monitor, &mut subscriptions, &mut pending, &mut cache);
+        let now = Instant::now();
         let timeout = subscriptions
             .values()
-            .map(|entry| entry.next_due.saturating_duration_since(Instant::now()))
+            .map(|entry| entry.next_due)
+            .chain(
+                pending
+                    .iter()
+                    .map(|entry: &PendingSample| entry.ready_at.unwrap_or(now)),
+            )
             .min()
+            .map(|due| due.saturating_duration_since(now))
             .unwrap_or(Duration::from_secs(60));
-
         match receiver.recv_timeout(timeout) {
             Ok(command)
                 if stop_requested.load(Ordering::Acquire)
                     && !matches!(&command, Command::Shutdown { .. }) =>
             {
-                // Drop any queued response sender instead of beginning new
-                // provider work after close has been requested.
                 close_subscriptions(&mut subscriptions);
                 monitor.shutdown_providers();
                 break;
@@ -495,8 +579,18 @@ fn run_sampler(
                 request,
                 response,
             }) => {
-                let result = sample_with_optional_warmup(&monitor, &device_id, &request);
-                let _ = response.send(result);
+                if pending.len() >= COMMAND_QUEUE_CAPACITY {
+                    let _ = response.send(Err(GpuError::Backpressure(
+                        "pending sample limit reached".into(),
+                    )));
+                } else {
+                    pending.push(PendingSample {
+                        device_id,
+                        request,
+                        response,
+                        ready_at: None,
+                    });
+                }
             }
             Ok(Command::Subscribe {
                 id,
@@ -504,8 +598,7 @@ fn run_sampler(
                 options,
                 slot,
             }) => {
-                if stop_requested.load(Ordering::Acquire) || slot.is_closed() {
-                    slot.close();
+                if slot.is_closed() {
                     continue;
                 }
                 subscriptions.insert(
@@ -525,7 +618,7 @@ fn run_sampler(
             }
             Ok(Command::Refresh { response }) => {
                 let result = monitor.refresh_devices();
-                latest_snapshots.clear();
+                cache.clear();
                 let _ = response.send(result);
             }
             Ok(Command::Shutdown { response }) => {
@@ -550,77 +643,178 @@ fn close_subscriptions(subscriptions: &mut HashMap<u64, SubscriptionEntry>) {
     }
 }
 
-fn sample_due_subscriptions(
+fn target_ids(target: &Option<String>, inventory: &[String]) -> Vec<String> {
+    target
+        .as_ref()
+        .map_or_else(|| inventory.to_vec(), |id| vec![id.clone()])
+}
+
+fn batch_for(
+    monitor: &MonitorInner,
+    target: &Option<String>,
+    inventory: &[String],
+    request: &SampleRequest,
+    values: &HashMap<String, Result<GpuSnapshot>>,
+) -> Result<GpuMonitorSnapshot> {
+    let gpus = target_ids(target, inventory)
+        .into_iter()
+        .map(|id| {
+            let mut snapshot = values
+                .get(&id)
+                .ok_or_else(|| GpuError::DeviceNotFound(id.clone()))?
+                .clone()?;
+            monitor.filter_snapshot(&id, &mut snapshot, request)?;
+            Ok(GpuDeviceSnapshot {
+                device_id: id,
+                snapshot,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(GpuMonitorSnapshot {
+        sampled_at: crate::model::now_millis(),
+        gpus,
+    })
+}
+
+fn deliver_due(
     monitor: &MonitorInner,
     subscriptions: &mut HashMap<u64, SubscriptionEntry>,
-    latest_snapshots: &mut HashMap<(String, bool), (Instant, GpuSnapshot)>,
+    pending: &mut Vec<PendingSample>,
+    cache: &mut HashMap<String, CachedSnapshot>,
 ) {
     let now = Instant::now();
-    let due: Vec<u64> = subscriptions
+    let inventory = monitor.device_ids();
+    let mut demands: HashMap<String, (bool, bool)> = HashMap::new();
+    let due: Vec<_> = subscriptions
         .iter()
-        .filter_map(|(id, entry)| (!entry.slot.is_closed() && entry.next_due <= now).then_some(*id))
+        .filter_map(|(id, entry)| (entry.next_due <= now).then_some(*id))
         .collect();
+    for id in &due {
+        let entry = &subscriptions[id];
+        for device in target_ids(&entry.device_id, &inventory) {
+            demands.entry(device).or_default().0 |= entry.options.include_processes;
+        }
+    }
+    for entry in pending
+        .iter()
+        .filter(|entry| entry.ready_at.is_none_or(|due| due <= now))
+    {
+        for device in target_ids(&entry.device_id, &inventory) {
+            let demand = demands.entry(device).or_default();
+            demand.0 |= entry.request.include_processes
+                && entry.request.wants(crate::model::MetricKey::Processes);
+            demand.1 |= entry.ready_at.is_some();
+        }
+    }
+    cache.retain(|id, value| {
+        inventory.contains(id)
+            && value.collected_at.elapsed() <= Duration::from_millis(SNAPSHOT_COALESCE_MS)
+    });
+    let missing: Vec<_> = demands
+        .iter()
+        .filter_map(|(id, (_, force))| {
+            (!cache.contains_key(id)
+                || (*force
+                    && cache
+                        .get(id)
+                        .is_some_and(|value| snapshot_has_first_sample(&value.snapshot))))
+            .then_some(id.clone())
+        })
+        .collect();
+    let mut values = HashMap::new();
+    if !missing.is_empty() {
+        for (id, result) in monitor.sample_many(
+            &missing,
+            &SampleRequest {
+                window_ms: 0,
+                metrics: None,
+                include_processes: false,
+            },
+        ) {
+            match result {
+                Ok(snapshot) => {
+                    cache.insert(
+                        id,
+                        CachedSnapshot {
+                            collected_at: Instant::now(),
+                            snapshot,
+                            processes_collected: false,
+                        },
+                    );
+                }
+                Err(error) => {
+                    values.insert(id, Err(error));
+                }
+            }
+        }
+    }
+    for (id, (include_processes, _)) in demands {
+        if let Some(value) = cache.get_mut(&id) {
+            if include_processes && !value.processes_collected {
+                match monitor.process_snapshot(&id) {
+                    Ok(processes) => value.snapshot.processes = processes,
+                    Err(error) => {
+                        values.insert(id, Err(error));
+                        continue;
+                    }
+                }
+                value.processes_collected = true;
+            }
+            values.insert(id, Ok(value.snapshot.clone()));
+        }
+    }
     for id in due {
-        let Some(entry) = subscriptions.get_mut(&id) else {
-            continue;
-        };
-        let key = (entry.device_id.clone(), entry.options.include_processes);
-        let cached = latest_snapshots
-            .get(&key)
-            .filter(|(sampled_at, _)| {
-                sampled_at.elapsed() <= Duration::from_millis(SNAPSHOT_COALESCE_MS)
-            })
-            .map(|(_, snapshot)| snapshot.clone());
-        let result = if let Some(snapshot) = cached {
-            Ok(snapshot)
-        } else {
-            let result = monitor.sample_once(
+        if let Some(entry) = subscriptions.get_mut(&id) {
+            match batch_for(
+                monitor,
                 &entry.device_id,
+                &inventory,
                 &SampleRequest {
                     window_ms: 0,
                     metrics: None,
                     include_processes: entry.options.include_processes,
                 },
-            );
-            if let Ok(snapshot) = &result {
-                latest_snapshots.insert(key, (Instant::now(), snapshot.clone()));
+                &values,
+            ) {
+                Ok(snapshot) => entry.slot.publish(snapshot),
+                Err(error) => entry.slot.fail(error.to_string()),
             }
-            result
-        };
-        match result {
-            Ok(snapshot) => entry.slot.publish(snapshot),
-            Err(error) => entry.slot.fail(error.to_string()),
-        }
-        let interval = Duration::from_millis(entry.options.interval_ms);
-        while entry.next_due <= now {
-            entry.next_due += interval;
+            let completed = Instant::now();
+            let interval = Duration::from_millis(entry.options.interval_ms);
+            while entry.next_due <= completed {
+                entry.next_due += interval;
+            }
         }
     }
-}
-
-fn sample_with_optional_warmup(
-    monitor: &MonitorInner,
-    device_id: &str,
-    request: &SampleRequest,
-) -> Result<GpuSnapshot> {
-    let first = monitor.sample_once(device_id, request)?;
-    let needs_warmup = snapshot_has_first_sample(&first);
-    if !needs_warmup || request.window_ms == 0 {
-        return Ok(first);
-    }
-
-    let deadline = Instant::now() + Duration::from_millis(request.window_ms);
-    while Instant::now() < deadline {
-        if monitor.is_closed() {
-            return Err(GpuError::MonitorClosed);
+    let mut retained = Vec::new();
+    for mut entry in pending.drain(..) {
+        if entry.ready_at.is_some_and(|due| due > now) {
+            retained.push(entry);
+            continue;
         }
-        thread::sleep(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(50)),
+        let result = batch_for(
+            monitor,
+            &entry.device_id,
+            &inventory,
+            &entry.request,
+            &values,
         );
+        if entry.ready_at.is_none()
+            && entry.request.window_ms > 0
+            && result.as_ref().is_ok_and(|batch| {
+                batch
+                    .gpus
+                    .iter()
+                    .any(|gpu| snapshot_has_first_sample(&gpu.snapshot))
+            })
+        {
+            entry.ready_at = Some(Instant::now() + Duration::from_millis(entry.request.window_ms));
+            retained.push(entry);
+        } else {
+            let _ = entry.response.send(result);
+        }
     }
-    monitor.sample_once(device_id, request)
+    *pending = retained;
 }
 
 fn snapshot_has_first_sample(snapshot: &GpuSnapshot) -> bool {
@@ -666,8 +860,8 @@ fn snapshot_has_first_sample(snapshot: &GpuSnapshot) -> bool {
 mod tests {
     use super::*;
 
-    fn snapshot(sampled_at: u64) -> GpuSnapshot {
-        serde_json::from_value(serde_json::json!({
+    fn snapshot(sampled_at: u64) -> GpuMonitorSnapshot {
+        let value: GpuSnapshot = serde_json::from_value(serde_json::json!({
             "sampledAt": sampled_at,
             "utilization": {
                 "overall": { "available": false, "reason": "unsupported" }
@@ -678,7 +872,14 @@ mod tests {
             "clocks": {},
             "fan": {}
         }))
-        .expect("valid test snapshot")
+        .expect("valid test snapshot");
+        GpuMonitorSnapshot {
+            sampled_at,
+            gpus: vec![GpuDeviceSnapshot {
+                device_id: "test".into(),
+                snapshot: value,
+            }],
+        }
     }
 
     #[test]

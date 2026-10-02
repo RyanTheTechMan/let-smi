@@ -8,8 +8,8 @@ use crate::model::{
 };
 use crate::provider::{Provider, ProviderMetadata};
 use crate::providers;
-use crate::sampler::{SampleSubscription, SamplerHub, WatchOptions};
-use crate::snapshot::{GpuSnapshot, build_snapshot};
+use crate::sampler::{BatchSampleSubscription, SampleSubscription, SamplerHub, WatchOptions};
+use crate::snapshot::{GpuMonitorSnapshot, GpuSnapshot, build_snapshot};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -174,6 +174,21 @@ impl GpuMonitor {
             return Err(GpuError::DeviceNotFound(device_id));
         }
         self.sampler()?.subscribe(device_id, options)
+    }
+
+    pub fn sample_all(&self, request: SampleRequest) -> Result<GpuMonitorSnapshot> {
+        self.ensure_open()?;
+        if request.window_ms > 60_000 {
+            return Err(GpuError::InvalidArgument(
+                "windowMs must be between 0 and 60000".into(),
+            ));
+        }
+        self.sampler()?.sample_all(request)
+    }
+
+    pub fn samples_all(&self, options: WatchOptions) -> Result<BatchSampleSubscription> {
+        self.ensure_open()?;
+        self.sampler()?.subscribe_all(options)
     }
 
     pub fn refresh(&self) -> Result<Vec<CanonicalGpu>> {
@@ -357,32 +372,118 @@ impl MonitorInner {
         Ok(())
     }
 
-    pub(crate) fn sample_once(
+    pub(crate) fn device_ids(&self) -> Vec<String> {
+        self.devices
+            .read()
+            .iter()
+            .map(|gpu| gpu.identity.id.clone())
+            .collect()
+    }
+
+    pub(crate) fn sample_many(
         &self,
-        device_id: &str,
+        ids: &[String],
         request: &SampleRequest,
-    ) -> Result<GpuSnapshot> {
-        if self.is_closed() {
-            return Err(GpuError::MonitorClosed);
+    ) -> Vec<(String, Result<GpuSnapshot>)> {
+        let inventory = self.devices.read();
+        let devices: Vec<_> = inventory
+            .iter()
+            .filter(|gpu| ids.contains(&gpu.identity.id))
+            .cloned()
+            .collect();
+        drop(inventory);
+        let mut samples: Vec<_> = self
+            .providers
+            .iter()
+            .map(|provider| provider.sample_batch(&devices, request).into_iter())
+            .collect();
+        let mut results = Vec::new();
+        for gpu in devices {
+            let observations = samples
+                .iter_mut()
+                .map(|samples| {
+                    samples.next().unwrap_or_else(|| {
+                        Err(GpuError::Internal(
+                            "provider batch result count mismatch".into(),
+                        ))
+                    })
+                })
+                .collect();
+            let id = gpu.identity.id.clone();
+            results.push((id, self.merge_sample(&gpu, request, observations)));
         }
+        for id in ids {
+            if !results.iter().any(|(key, _)| key == id) {
+                results.push((id.clone(), Err(GpuError::DeviceNotFound(id.clone()))));
+            }
+        }
+        results
+    }
+
+    pub(crate) fn filter_snapshot(
+        &self,
+        id: &str,
+        snapshot: &mut GpuSnapshot,
+        request: &SampleRequest,
+    ) -> Result<()> {
+        let devices = self.devices.read();
+        let gpu = devices
+            .iter()
+            .find(|gpu| gpu.identity.id == id)
+            .ok_or_else(|| GpuError::DeviceNotFound(id.into()))?;
+        crate::snapshot::filter_snapshot(snapshot, gpu, request);
+        Ok(())
+    }
+
+    pub(crate) fn process_snapshot(&self, id: &str) -> Result<Option<Vec<GpuProcessSnapshot>>> {
         let gpu = self
             .devices
             .read()
             .iter()
-            .find(|gpu| gpu.identity.id == device_id)
+            .find(|gpu| gpu.identity.id == id)
             .cloned()
-            .ok_or_else(|| GpuError::DeviceNotFound(device_id.into()))?;
+            .ok_or_else(|| GpuError::DeviceNotFound(id.into()))?;
+        let request = SampleRequest {
+            window_ms: 0,
+            metrics: Some([crate::model::MetricKey::Processes].into_iter().collect()),
+            include_processes: true,
+        };
+        let samples = self
+            .providers
+            .iter()
+            .map(|provider| {
+                if provider
+                    .capabilities(&gpu)
+                    .supports(crate::model::MetricKey::Processes)
+                {
+                    provider.sample_processes(&gpu)
+                } else {
+                    Ok(ProviderSample::default())
+                }
+            })
+            .collect();
+        Ok(self.merge_sample(&gpu, &request, samples)?.processes)
+    }
 
+    fn merge_sample(
+        &self,
+        gpu: &CanonicalGpu,
+        request: &SampleRequest,
+        samples: Vec<Result<ProviderSample>>,
+    ) -> Result<GpuSnapshot> {
+        if self.is_closed() {
+            return Err(GpuError::MonitorClosed);
+        }
         let mut metrics = Vec::new();
         let mut unavailable = Vec::new();
         let mut best_processes: Option<(i16, Vec<GpuProcessSnapshot>)> = None;
         let mut metadata: BTreeMap<ProviderId, ProviderMetadata> = BTreeMap::new();
 
-        for provider in &self.providers {
+        for (provider, sample) in self.providers.iter().zip(samples) {
             let provider_metadata = provider.metadata();
             metadata.insert(provider_metadata.id.to_owned(), provider_metadata.clone());
-            let capabilities = provider.capabilities(&gpu);
-            match provider.sample(&gpu, request) {
+            let capabilities = provider.capabilities(gpu);
+            match sample {
                 Ok(sample) => {
                     let mut sample = sample;
                     if sample.metrics.len() > MAX_PROVIDER_SAMPLE_VALUES {
@@ -412,7 +513,7 @@ impl MonitorInner {
                         processes.truncate(MAX_PROCESSES_PER_SNAPSHOT);
                     }
                     collect_provider_sample(
-                        &gpu,
+                        gpu,
                         provider_metadata.specificity,
                         sample,
                         &mut metrics,
@@ -445,14 +546,16 @@ impl MonitorInner {
 
         let sampled_at = now_millis();
         let merged = merge_metrics(metrics, unavailable, &metadata, sampled_at);
-        self.merge_diagnostics
-            .write()
-            .insert(gpu.identity.id.clone(), merged.diagnostics.clone());
+        if request.metrics.is_none() {
+            self.merge_diagnostics
+                .write()
+                .insert(gpu.identity.id.clone(), merged.diagnostics.clone());
+        }
         let processes = request
             .include_processes
             .then(|| best_processes.map(|(_, values)| values))
             .flatten();
-        Ok(build_snapshot(&gpu, &merged, sampled_at, processes))
+        Ok(build_snapshot(gpu, &merged, sampled_at, processes))
     }
 
     pub(crate) fn shutdown_providers(&self) {
@@ -701,6 +804,9 @@ mod tests {
         let mut observation = DeviceObservation::new("mock", "zero", GpuVendor::Intel, "Mock GPU");
         observation.uuid = Some("mock-uuid".into());
         observation.capabilities = CapabilitySet::new([MetricKey::UtilizationOverall]);
+        if samples.iter().any(|sample| sample.processes.is_some()) {
+            observation.capabilities.insert(MetricKey::Processes);
+        }
         let provider = Arc::new(MockProvider::new(
             ProviderMetadata::new("mock", 100, 100),
             vec![observation],
@@ -1011,5 +1117,221 @@ mod tests {
         assert!(!bounded_json_value(&serde_json::Value::String(
             "x".repeat(65_537)
         )));
+    }
+    fn wait_batch(subscription: &BatchSampleSubscription) -> Result<Option<GpuMonitorSnapshot>> {
+        let mut future = Box::pin(subscription.next_async()?);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            match std::future::Future::poll(future.as_mut(), &mut context) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(1))
+                }
+                _ => panic!("batch delivery timed out"),
+            }
+        }
+    }
+
+    #[test]
+    fn batch_and_mixed_process_listeners_share_scalar_polling() {
+        let (monitor, provider) = mock_monitor(vec![ProviderSample {
+            processes: Some(Vec::new()),
+            ..ProviderSample::default()
+        }]);
+        let id = monitor.gpus().unwrap()[0].identity.id.clone();
+        let scalar = monitor
+            .samples(id.clone(), WatchOptions::default())
+            .unwrap();
+        let processes = monitor
+            .samples(
+                id,
+                WatchOptions {
+                    include_processes: true,
+                    ..WatchOptions::default()
+                },
+            )
+            .unwrap();
+        let batch = monitor.samples_all(WatchOptions::default()).unwrap();
+        assert!(wait_next(&scalar).unwrap().unwrap().processes.is_none());
+        assert_eq!(
+            wait_next(&processes).unwrap().unwrap().processes,
+            Some(Vec::new())
+        );
+        assert_eq!(wait_batch(&batch).unwrap().unwrap().gpus.len(), 1);
+        assert_eq!(provider.sample_count(), 1);
+        monitor.close();
+        assert!(wait_batch(&batch).unwrap().is_none());
+    }
+
+    #[test]
+    fn warmup_allows_refresh_and_stream_delivery() {
+        let (monitor, provider) = mock_monitor(vec![ProviderSample {
+            unavailable: vec![UnavailableObservation {
+                device_id: "mock-uuid".into(),
+                metric: MetricKey::UtilizationOverall,
+                reason: UnavailableReason::FirstSample,
+                source: Some("mock".into()),
+                message: None,
+            }],
+            ..ProviderSample::default()
+        }]);
+        let id = monitor.gpus().unwrap()[0].identity.id.clone();
+        // The observation must use the canonical ID to survive the merge boundary.
+        let first_sample = ProviderSample {
+            unavailable: vec![UnavailableObservation {
+                device_id: id.clone(),
+                metric: MetricKey::UtilizationOverall,
+                reason: UnavailableReason::FirstSample,
+                source: Some("mock".into()),
+                message: None,
+            }],
+            ..ProviderSample::default()
+        };
+        drop(provider);
+        monitor.close();
+        let (monitor, provider) = mock_monitor(vec![first_sample, ProviderSample::default()]);
+        let worker_monitor = monitor.clone();
+        let worker = thread::spawn(move || {
+            worker_monitor.sample(
+                id.clone(),
+                SampleRequest {
+                    window_ms: 1_000,
+                    ..SampleRequest::default()
+                },
+            )
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while provider.sample_count() == 0 && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let started = std::time::Instant::now();
+        monitor.refresh().unwrap();
+        let stream = monitor.samples_all(WatchOptions::default()).unwrap();
+        assert!(wait_batch(&stream).unwrap().is_some());
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        monitor.close();
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(GpuError::MonitorClosed)
+        ));
+    }
+
+    #[test]
+    fn batch_stream_follows_refreshed_inventory_and_removed_gpu_fails() {
+        let (monitor, provider) = mock_monitor(vec![ProviderSample::default()]);
+        let original = monitor.gpus().unwrap()[0].identity.id.clone();
+        let batch = monitor
+            .samples_all(WatchOptions {
+                interval_ms: 50,
+                ..WatchOptions::default()
+            })
+            .unwrap();
+        let single = monitor
+            .samples(
+                original.clone(),
+                WatchOptions {
+                    interval_ms: 50,
+                    ..WatchOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            wait_batch(&batch).unwrap().unwrap().gpus[0].device_id,
+            original
+        );
+        wait_next(&single).unwrap().unwrap();
+        let mut replacement =
+            DeviceObservation::new("mock", "replacement", GpuVendor::Intel, "New GPU");
+        replacement.uuid = Some("replacement-uuid".into());
+        provider.replace_devices(vec![replacement]);
+        let refreshed = monitor.refresh().unwrap();
+        assert_ne!(refreshed[0].identity.id, original);
+        // A latest-value slot can still contain a batch delivered before refresh.
+        let next = loop {
+            let next = wait_batch(&batch).unwrap().unwrap();
+            if next.gpus[0].device_id != original {
+                break next;
+            }
+        };
+        assert_eq!(next.gpus[0].device_id, refreshed[0].identity.id);
+        assert!(matches!(
+            monitor.sample(original, SampleRequest::default()),
+            Err(GpuError::DeviceNotFound(_))
+        ));
+        let removed = loop {
+            match wait_next(&single) {
+                Ok(Some(_)) => continue,
+                value => break value,
+            }
+        };
+        assert!(removed.is_err());
+        provider.replace_devices(Vec::new());
+        monitor.refresh().unwrap();
+        loop {
+            if wait_batch(&batch).unwrap().unwrap().gpus.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            monitor
+                .sample_all(SampleRequest::default())
+                .unwrap()
+                .gpus
+                .is_empty()
+        );
+        monitor.close();
+    }
+
+    #[test]
+    fn metric_selection_excludes_unrequested_warmup_and_processes() {
+        let (monitor, provider) = mock_monitor(vec![ProviderSample {
+            unavailable: vec![UnavailableObservation {
+                device_id: String::new(),
+                metric: MetricKey::UtilizationOverall,
+                reason: UnavailableReason::FirstSample,
+                source: Some("mock".into()),
+                message: None,
+            }],
+            processes: Some(Vec::new()),
+            ..ProviderSample::default()
+        }]);
+        let started = std::time::Instant::now();
+        let batch = monitor
+            .sample_all(SampleRequest {
+                window_ms: 1_000,
+                metrics: Some([MetricKey::TemperatureCoreCelsius].into_iter().collect()),
+                include_processes: true,
+            })
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(provider.sample_count(), 1);
+        assert!(batch.gpus[0].snapshot.processes.is_none());
+        assert!(matches!(batch.gpus[0].snapshot.utilization.overall,
+            Metric::Unavailable(ref value) if value.reason == UnavailableReason::TemporarilyUnavailable));
+        // A listener still receives the unfiltered shared observation.
+        let stream = monitor.samples_all(WatchOptions::default()).unwrap();
+        assert!(
+            matches!(wait_batch(&stream).unwrap().unwrap().gpus[0].snapshot.utilization.overall,
+            Metric::Unavailable(ref value) if value.reason == UnavailableReason::FirstSample)
+        );
+        monitor.close();
+    }
+
+    #[test]
+    fn empty_inventory_has_empty_batch_and_cancellable_stream() {
+        let monitor = GpuMonitor::with_providers(Vec::new()).unwrap();
+        assert!(
+            monitor
+                .sample_all(SampleRequest::default())
+                .unwrap()
+                .gpus
+                .is_empty()
+        );
+        let stream = monitor.samples_all(WatchOptions::default()).unwrap();
+        assert!(wait_batch(&stream).unwrap().unwrap().gpus.is_empty());
+        stream.cancel();
+        assert!(wait_batch(&stream).unwrap().is_none());
+        monitor.close();
     }
 }

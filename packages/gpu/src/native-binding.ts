@@ -22,6 +22,14 @@ export interface NativeMonitorHandle {
       readonly includeProcesses?: boolean;
     },
   ): unknown;
+  sampleAll(options: {
+    readonly windowMs?: number;
+    readonly includeProcesses?: boolean;
+  }): unknown;
+  subscribeAll(options: {
+    readonly intervalMs?: number;
+    readonly includeProcesses?: boolean;
+  }): unknown;
   vendorInfo(id: string): unknown;
   diagnostics(): unknown;
   refresh(): Promise<void> | void;
@@ -58,6 +66,8 @@ export function assertNativeMonitor(value: unknown): NativeMonitorHandle {
     "listGpus",
     "sampleGpu",
     "subscribeGpu",
+    "sampleAll",
+    "subscribeAll",
     "vendorInfo",
     "diagnostics",
     "refresh",

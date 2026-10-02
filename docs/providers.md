@@ -7,18 +7,18 @@ from vendor name alone.
 
 ## Provider summary
 
-| Provider ID           | Platform            | Inventory                                                                                                          | Telemetry                                                  | Loading behavior                                                |
-| --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------- |
-| `windows-dxgi`        | Windows x64         | adapter name, vendor/device/subsystem IDs, LUID, PCI location, dedicated/shared totals, physical-adapter filtering | none                                                       | Windows DXGI and D3DKMT APIs                                    |
-| `windows-pdh`         | Windows x64         | contributes no duplicate inventory                                                                                 | WDDM engine and overall utilization                        | persistent bounded Windows PDH query; first reading unavailable |
-| `nvml`                | Windows/Linux       | NVIDIA UUID, name, PCI, driver, architecture, VBIOS, VRAM                                                          | NVIDIA utilization, memory, sensors, processes, extensions | dynamically loads host NVML; never requires `nvidia-smi`        |
-| `linux-sysfs`         | Linux x64/ARM64     | PCI display devices unioned with DRM card/render nodes, driver, memory, partitions                                 | AMD sysfs plus attributable hwmon; Intel clocks/hwmon      | Rust filesystem access only; no `libdrm` hard link              |
-| `macos-metal`         | macOS x64/ARM64     | Metal name, registry ID, location/kind, GPU families, unified-memory topology                                      | none                                                       | public OS framework                                             |
-| `apple-ioreport`      | Apple Silicon macOS | one Apple GPU observation used for correlation                                                                     | active residency and GPU energy/power                      | private framework loaded by absolute OS path and symbol-checked |
-| `apple-smc`           | macOS x64/ARM64     | Metal-correlated sensor observation                                                                                | best-effort GPU die temperature                            | public IOKit calls to an undocumented AppleSMC protocol         |
-| `amd-adlx`            | Windows x64         | none                                                                                                               | unimplemented                                              | secure system-DLL presence diagnostic only                      |
-| `level-zero`          | Windows x64         | none                                                                                                               | unimplemented                                              | secure system-DLL presence diagnostic only                      |
-| `macos-ioaccelerator` | Intel-era macOS     | none                                                                                                               | none in the validated release                              | explicit unsupported diagnostic boundary                        |
+| Provider ID           | Platform            | Inventory                                                                                                          | Telemetry                                                        | Loading behavior                                                |
+| --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| `windows-dxgi`        | Windows x64         | adapter name, vendor/device/subsystem IDs, LUID, PCI location, dedicated/shared totals, physical-adapter filtering | none                                                             | Windows DXGI and D3DKMT APIs                                    |
+| `windows-pdh`         | Windows x64         | contributes no duplicate inventory                                                                                 | WDDM engine and overall utilization                              | persistent bounded Windows PDH query; first reading unavailable |
+| `nvml`                | Windows/Linux       | NVIDIA UUID, name, PCI, driver, architecture, VBIOS, VRAM                                                          | NVIDIA utilization, memory, sensors, processes, extensions       | dynamically loads host NVML; never requires `nvidia-smi`        |
+| `linux-sysfs`         | Linux x64/ARM64     | PCI display devices unioned with DRM card/render nodes, driver, memory, partitions                                 | AMD sysfs plus attributable hwmon; Intel clocks/hwmon            | Rust filesystem access only; no `libdrm` hard link              |
+| `macos-metal`         | macOS x64/ARM64     | Metal name, registry ID, location/kind, GPU families, unified-memory topology                                      | none                                                             | public OS framework                                             |
+| `apple-ioreport`      | Apple Silicon macOS | one Apple GPU observation used for correlation                                                                     | active residency and GPU energy/power                            | private framework loaded by absolute OS path and symbol-checked |
+| `apple-smc`           | macOS x64/ARM64     | Metal-correlated sensor observation                                                                                | best-effort GPU die temperature                                  | public IOKit calls to an undocumented AppleSMC protocol         |
+| `amd-adlx`            | Windows x64         | none                                                                                                               | unimplemented                                                    | secure system-DLL presence diagnostic only                      |
+| `level-zero`          | Windows x64 / Linux | telemetry attaches by PCI; no duplicate inventory                                                                  | Intel engines, clocks, GPU/memory temperatures, GPU energy/power | dynamically loaded optional Sysman runtime                      |
+| `macos-ioaccelerator` | Intel-era macOS     | none                                                                                                               | none in the validated release                                    | explicit unsupported diagnostic boundary                        |
 
 ## Correlation and provider priority
 
@@ -29,16 +29,17 @@ does not own the entire GPU.
 
 Telemetry priority is per metric. The important current rules are:
 
-| Device/field                                          | Preferred source                       | Fallback                                                                                          |
-| ----------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| NVIDIA utilization/sensors/memory on Windows or Linux | NVML                                   | Windows PDH for utilization only; Linux unavailable without NVML except attributable hwmon fields |
-| AMD Windows utilization                               | PDH                                    | unavailable                                                                                       |
-| Intel Windows utilization                             | PDH                                    | unavailable                                                                                       |
-| AMD Linux overall/memory busy/VRAM/GTT                | AMD kernel sysfs through `linux-sysfs` | unavailable                                                                                       |
-| Linux temperature/power/fan                           | attributable hwmon source              | unavailable                                                                                       |
-| Intel Linux clocks                                    | i915/Xe sysfs                          | unavailable                                                                                       |
-| Apple Silicon utilization/power                       | IOReport                               | unavailable                                                                                       |
-| macOS GPU temperature                                 | AppleSMC                               | unavailable                                                                                       |
+| Device/field                                                         | Preferred source                       | Fallback                                                                                          |
+| -------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| NVIDIA utilization/sensors/memory on Windows or Linux                | NVML                                   | Windows PDH for utilization only; Linux unavailable without NVML except attributable hwmon fields |
+| AMD Windows utilization                                              | PDH                                    | unavailable                                                                                       |
+| Intel Windows utilization                                            | Level Zero Sysman                      | PDH                                                                                               |
+| AMD Linux overall/memory busy/VRAM/GTT                               | AMD kernel sysfs through `linux-sysfs` | unavailable                                                                                       |
+| Linux temperature/power/fan                                          | attributable hwmon source              | unavailable                                                                                       |
+| Intel Linux utilization                                              | Level Zero Sysman                      | unavailable                                                                                       |
+| Intel Windows/Linux clocks, GPU/memory temperature, GPU energy/power | Level Zero Sysman                      | attributable sysfs fields on Linux                                                                |
+| Apple Silicon utilization/power                                      | IOReport                               | unavailable                                                                                       |
+| macOS GPU temperature                                                | AppleSMC                               | unavailable                                                                                       |
 
 NVML has the highest priorities for its metrics. IOReport has the highest Apple
 utilization/power priorities, SMC has a temperature-specific priority, and
@@ -91,12 +92,12 @@ absolute path is then passed to `nvml-wrapper`. Current directory, `PATH`,
 environment-selected driver paths, and process-global `SetDllDirectoryW` are
 not used.
 
-ADLX and Level Zero are secure
-`LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)` presence probes only.
-Diagnostics always report them as nonfunctional: `unsupported` when the DLL is
-detected and `driver-library-missing` otherwise. They advertise no metric
-capabilities and never fabricate AMD/Intel sensor data. No AMD hardware or ADLX
-telemetry was validated. Level Zero Sysman is not implemented.
+ADLX is a secure
+`LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)` presence probe only.
+Diagnostics always report it as nonfunctional: `unsupported` when the DLL is
+detected and `driver-library-missing` otherwise. It advertises no metric
+capabilities and never fabricates AMD sensor data. No AMD hardware or ADLX
+telemetry was validated. Level Zero Sysman telemetry is implemented as described below.
 
 Windows ARM64 is not a supported or packaged target in this release. The
 Windows provider behavior described here is x64-only.
@@ -143,10 +144,10 @@ advanced XGMI/firmware data remain future work.
 
 Both `i915` and `xe` inventory are supported. The provider reads current GT
 frequency paths that exist on the installed kernel and attributable hwmon
-sensors. It intentionally does not claim device-wide overall utilization:
+sensors. Sysfs itself does not claim device-wide overall utilization:
 standard DRM fdinfo is per-client and permission-limited, and upstream Intel
-engine sysfs paths do not provide a portable device busy counter. A future
-dynamically loaded Level Zero Sysman or i915 PMU backend should supply this.
+engine sysfs paths do not provide a portable device busy counter. The optional Level Zero Sysman provider supplies engine counters when the
+installed runtime, driver, and permissions allow them.
 
 ### NVIDIA Linux
 
@@ -234,3 +235,33 @@ without representative Intel/AMD Mac hardware.
 
 See [metric semantics](metric-semantics.md) for exact definitions and
 [testing](testing.md) for the hardware matrix.
+
+## Intel Level Zero Sysman — 0.2.0
+
+The optional `level-zero` provider initializes with `zesInit(0)` without changing
+process environment variables. Windows loads `ze_loader.dll` with a System32-only
+search policy; Linux uses the system loader for `libze_loader.so.1`. It attaches
+telemetry to Intel PCI identities already discovered by DXGI or sysfs and never
+adds a stronger UUID or a duplicate inventory device.
+
+Resources are enumerated with bounded counts, then probed independently. Supported
+fields include engine occupancy, actual GPU/memory clocks, explicitly typed
+GPU/memory temperatures, and energy/power from attributable GPU/card domains.
+CPU/package power, combined media encode/decode guesses, memory accounting, and
+Intel process telemetry are excluded. `intelInfo().engineGroups` exposes the last
+measured group readings without polling counters again.
+
+Overall utilization prefers a device-wide all-engine counter. If absent, it uses
+the maximum measured engine-group occupancy with that definition attached. Engine
+groups are never summed. Occupancy uses each resource's native counter ratio;
+engine `intervalMs` measures monotonic observation time because native engine
+timestamp units are implementation-specific. Energy/power timestamps are defined
+in microseconds. Initial samples and counter resets re-establish baselines. Missing
+runtimes, unsupported calls, permission failures, and device loss remain explicit.
+Sysman receives preference for its available Intel fields; PDH and sysfs candidates
+remain fallbacks.
+
+The provider has deterministic tests and compilation coverage. Windows and Linux
+Intel hardware validation is required before declaring the new backend
+hardware-validated. The previous Windows PDH/NVIDIA validation remains historical
+coverage of version 0.1.0.

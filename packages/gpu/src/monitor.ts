@@ -1,5 +1,6 @@
 import {
   createGpu,
+  sampleStream,
   type Gpu,
   type GpuClient,
   type GpuSubscription,
@@ -14,6 +15,9 @@ import {
 import type {
   GpuDiagnostics,
   GpuSnapshot,
+  GpuMonitorSnapshot,
+  SampleOptions,
+  WatchOptions,
   GpuVendor,
   MonitorOpenOptions,
 } from "./types.js";
@@ -25,23 +29,29 @@ import {
   parseGpuDiagnostics,
   parseGpuIdentity,
   parseGpuSnapshot,
+  parseGpuMonitorSnapshot,
+  normalizeSampleOptions,
+  normalizeWatchOptions,
   vendorInfoRecord,
 } from "./validation.js";
 
 type MonitorState = "open" | "closing" | "closed";
 const MAX_GPU_DESCRIPTORS = 1_024;
 
-class ManagedSubscription implements GpuSubscription {
+class ManagedSubscription<T> {
   readonly #native: NativeGpuSubscription;
-  readonly #onFinished: (subscription: ManagedSubscription) => void;
+  readonly #parse: (value: unknown) => T;
+  readonly #onFinished: (subscription: ManagedSubscription<T>) => void;
   #cancelled = false;
   #cancelPromise: Promise<void> | undefined;
 
   constructor(
     native: NativeGpuSubscription,
-    onFinished: (subscription: ManagedSubscription) => void,
+    onFinished: (subscription: ManagedSubscription<T>) => void,
+    parse: (value: unknown) => T,
   ) {
     this.#native = native;
+    this.#parse = parse;
     this.#onFinished = onFinished;
   }
 
@@ -49,7 +59,7 @@ class ManagedSubscription implements GpuSubscription {
     return this.#cancelled;
   }
 
-  async next(): Promise<GpuSnapshot | null> {
+  async next(): Promise<T | null> {
     if (this.#isCancelled()) return null;
     try {
       const value = await this.#native.next();
@@ -58,7 +68,7 @@ class ManagedSubscription implements GpuSubscription {
         await this.cancel();
         return null;
       }
-      return parseGpuSnapshot(value, "subscription.next");
+      return this.#parse(value);
     } catch (error) {
       if (this.#isCancelled()) return null;
       throw error;
@@ -118,7 +128,9 @@ function parseGpuList(value: unknown, client: GpuClient): readonly Gpu[] {
 export class GpuMonitor {
   readonly #native: NativeMonitorHandle;
   readonly #client: GpuClient;
-  readonly #subscriptions = new Set<ManagedSubscription>();
+  readonly #subscriptions = new Set<
+    ManagedSubscription<GpuSnapshot> | ManagedSubscription<GpuMonitorSnapshot>
+  >();
   #state: MonitorState = "open";
   #gpuCache: Promise<readonly Gpu[]> | undefined;
   #closePromise: Promise<void> | undefined;
@@ -187,9 +199,13 @@ export class GpuMonitor {
       await Promise.resolve(native.cancel()).catch(() => undefined);
       throw new GpuMonitorClosedError();
     }
-    const subscription = new ManagedSubscription(native, (finished) => {
-      this.#subscriptions.delete(finished);
-    });
+    const subscription = new ManagedSubscription<GpuSnapshot>(
+      native,
+      (finished) => {
+        this.#subscriptions.delete(finished);
+      },
+      (value) => parseGpuSnapshot(value, "subscription.next"),
+    );
     this.#subscriptions.add(subscription);
     return subscription;
   }
@@ -202,6 +218,44 @@ export class GpuMonitor {
     const value = await this.#native.vendorInfo(id);
     this.#assertOpen();
     return vendorInfoRecord(value, vendor);
+  }
+
+  async sampleAll(options?: SampleOptions): Promise<GpuMonitorSnapshot> {
+    this.#assertOpen();
+    const value = await this.#native.sampleAll(normalizeSampleOptions(options));
+    this.#assertOpen();
+    return parseGpuMonitorSnapshot(value);
+  }
+
+  async *samplesAll(
+    options?: WatchOptions,
+  ): AsyncGenerator<GpuMonitorSnapshot, void, void> {
+    const { native, signal } = normalizeWatchOptions(options);
+    this.#assertOpen();
+    yield* sampleStream(() => this.#subscribeAll(native), signal);
+  }
+
+  async #subscribeAll(options: {
+    readonly intervalMs?: number;
+    readonly includeProcesses?: boolean;
+  }): Promise<ManagedSubscription<GpuMonitorSnapshot>> {
+    this.#assertOpen();
+    const native = assertNativeSubscription(
+      await this.#native.subscribeAll(options),
+    );
+    if (this.#state !== "open") {
+      await Promise.resolve(native.cancel()).catch(() => undefined);
+      throw new GpuMonitorClosedError();
+    }
+    const subscription = new ManagedSubscription<GpuMonitorSnapshot>(
+      native,
+      (finished) => {
+        this.#subscriptions.delete(finished);
+      },
+      parseGpuMonitorSnapshot,
+    );
+    this.#subscriptions.add(subscription);
+    return subscription;
   }
 
   async diagnostics(): Promise<GpuDiagnostics> {

@@ -15,6 +15,7 @@ import type {
   GpuProcessSnapshot,
   GpuProcessUtilizationSnapshot,
   GpuSnapshot,
+  GpuMonitorSnapshot,
   GpuTemperatureSnapshot,
   GpuUtilizationCapabilities,
   GpuUtilizationSnapshot,
@@ -844,6 +845,36 @@ export function parseGpuSnapshot(
     clocks: parseClocks(input.clocks, `${path}.clocks`),
     fan: parseFan(input.fan, `${path}.fan`),
     ...(processes === undefined ? {} : { processes }),
+  });
+}
+
+export function parseGpuMonitorSnapshot(
+  value: unknown,
+  path = "monitorSnapshot",
+): GpuMonitorSnapshot {
+  const input = record(value, path);
+  const ids = new Set<string>();
+  const gpus = boundedArray(input.gpus, `${path}.gpus`, 1_024).map(
+    (value, index) => {
+      const entryPath = `${path}.gpus[${String(index)}]`;
+      const entry = record(value, entryPath);
+      const deviceId = nonEmptyString(entry.deviceId, `${entryPath}.deviceId`);
+      if (deviceId.length > 512 || ids.has(deviceId)) {
+        throw new GpuNativeDataError(
+          `${entryPath}.deviceId`,
+          "oversized or duplicate device id",
+        );
+      }
+      ids.add(deviceId);
+      return Object.freeze({
+        deviceId,
+        snapshot: parseGpuSnapshot(entry.snapshot, `${entryPath}.snapshot`),
+      });
+    },
+  );
+  return Object.freeze({
+    sampledAt: finiteNumber(input.sampledAt, `${path}.sampledAt`, { min: 0 }),
+    gpus: Object.freeze(gpus),
   });
 }
 

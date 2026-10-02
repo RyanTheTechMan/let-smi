@@ -62,6 +62,57 @@ class CancellationState {
   }
 }
 
+interface StreamSubscription<T> {
+  next(): Promise<T | null>;
+  cancel(): Promise<void>;
+}
+
+export async function* sampleStream<T>(
+  start: () => Promise<StreamSubscription<T>>,
+  signal?: AbortSignal,
+): AsyncGenerator<T, void, void> {
+  let subscription: StreamSubscription<T> | undefined;
+  const cancellation = new CancellationState(signal?.aborted ?? false);
+  const handleAbort = (): void => {
+    cancellation.abort();
+    // Native cancellation is asynchronous, while AbortSignal listeners are
+    // synchronous. The generator's finally block observes the same promise.
+    void subscription?.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener("abort", handleAbort, { once: true });
+
+  try {
+    if (cancellation.isAborted()) return;
+    try {
+      subscription = await start();
+    } catch (error) {
+      if (cancellation.isAborted()) return;
+      throw error;
+    }
+    if (cancellation.isAborted()) return;
+
+    while (!cancellation.isAborted()) {
+      let snapshot: T | null;
+      try {
+        snapshot = await subscription.next();
+      } catch (error) {
+        if (cancellation.isAborted()) return;
+        throw error;
+      }
+      if (snapshot === null || cancellation.isAborted()) return;
+      yield snapshot;
+    }
+  } finally {
+    signal?.removeEventListener("abort", handleAbort);
+    const cancellationResult = subscription?.cancel();
+    if (cancellation.isAborted()) {
+      await cancellationResult?.catch(() => undefined);
+    } else {
+      await cancellationResult;
+    }
+  }
+}
+
 export abstract class GenericGpu<TVendor extends GpuVendor = GpuVendor> {
   abstract readonly vendor: TVendor;
 
@@ -92,46 +143,7 @@ export abstract class GenericGpu<TVendor extends GpuVendor = GpuVendor> {
   ): AsyncGenerator<GpuSnapshot, void, void> {
     const { native, signal } = normalizeWatchOptions(options);
     this.#client.assertOpen();
-    let subscription: GpuSubscription | undefined;
-    const cancellation = new CancellationState(signal?.aborted ?? false);
-    const handleAbort = (): void => {
-      cancellation.abort();
-      // Native cancellation is asynchronous, while AbortSignal listeners are
-      // synchronous. The generator's finally block observes the same promise.
-      void subscription?.cancel().catch(() => undefined);
-    };
-    signal?.addEventListener("abort", handleAbort, { once: true });
-
-    try {
-      if (cancellation.isAborted()) return;
-      try {
-        subscription = await this.#client.subscribe(this.id, native);
-      } catch (error) {
-        if (cancellation.isAborted()) return;
-        throw error;
-      }
-      if (cancellation.isAborted()) return;
-
-      while (!cancellation.isAborted()) {
-        let snapshot: GpuSnapshot | null;
-        try {
-          snapshot = await subscription.next();
-        } catch (error) {
-          if (cancellation.isAborted()) return;
-          throw error;
-        }
-        if (snapshot === null || cancellation.isAborted()) return;
-        yield snapshot;
-      }
-    } finally {
-      signal?.removeEventListener("abort", handleAbort);
-      const cancellationResult = subscription?.cancel();
-      if (cancellation.isAborted()) {
-        await cancellationResult?.catch(() => undefined);
-      } else {
-        await cancellationResult;
-      }
-    }
+    yield* sampleStream(() => this.#client.subscribe(this.id, native), signal);
   }
 
   supports(metric: GpuMetricName): boolean {

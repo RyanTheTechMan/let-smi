@@ -48,6 +48,30 @@ pub trait TelemetryProvider: Send + Sync {
 
     fn sample(&self, device: &CanonicalGpu, request: &SampleRequest) -> Result<ProviderSample>;
 
+    /// Collects a cycle for several devices. Results must match input order.
+    fn sample_batch(
+        &self,
+        devices: &[CanonicalGpu],
+        request: &SampleRequest,
+    ) -> Vec<Result<ProviderSample>> {
+        devices
+            .iter()
+            .map(|device| self.sample(device, request))
+            .collect()
+    }
+
+    /// Process enrichment must not advance scalar counter baselines.
+    fn sample_processes(&self, device: &CanonicalGpu) -> Result<ProviderSample> {
+        self.sample(
+            device,
+            &SampleRequest {
+                window_ms: 0,
+                metrics: Some([MetricKey::Processes].into_iter().collect()),
+                include_processes: true,
+            },
+        )
+    }
+
     fn vendor_info(&self, device: &CanonicalGpu) -> Result<serde_json::Value> {
         let _ = device;
         Ok(serde_json::Value::Null)

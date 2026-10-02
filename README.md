@@ -57,18 +57,18 @@ The table describes the current implementation, not the theoretical capability
 of a vendor SDK. A check means the provider is implemented; actual fields still
 depend on the installed driver, device, permissions, and sensors.
 
-| Platform/provider   | Inventory                                | Overall utilization                                      | Other current telemetry                                                                         |
-| ------------------- | ---------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Windows generic     | DXGI name, IDs, memory, LUID             | PDH maximum active WDDM engine                           | graphics/compute/copy/encode/decode engine groups when present                                  |
-| Windows NVIDIA      | DXGI + dynamically loaded NVML           | NVML, with PDH fallback                                  | VRAM, temperature, power/energy, clocks, fan, encoder/decoder, processes, and NVIDIA extensions |
-| Windows AMD         | DXGI code path; not hardware-tested here | PDH code path; not hardware-tested here                  | ADLX is unimplemented/diagnostic-only; no AMD sensor claim                                      |
-| Windows Intel       | DXGI/D3DKMT; UHD 770 tested              | PDH; UHD 770 tested                                      | Level Zero Sysman is unimplemented/diagnostic-only                                              |
-| Linux generic       | PCI + DRM sysfs, driver, IDs             | provider-dependent                                       | hwmon sensors where safely attributable                                                         |
-| Linux NVIDIA        | sysfs + dynamically loaded NVML          | NVML                                                     | NVML metrics and extensions as above                                                            |
-| Linux AMD           | PCI/DRM sysfs                            | `gpu_busy_percent`                                       | VRAM/GTT, memory busy, hwmon temperature/power/energy/fan, DPM clocks                           |
-| Linux Intel i915/Xe | PCI/DRM sysfs                            | unavailable unless a future accurate provider is present | current GT clocks and attributable hwmon sensors                                                |
-| macOS Apple Silicon | Metal                                    | dynamically loaded IOReport active residency             | IOReport GPU power/energy and AppleSMC temperature                                              |
-| Intel-era macOS     | Metal best effort                        | unavailable in the validated release                     | AppleSMC temperature only when a single GPU can be correlated safely                            |
+| Platform/provider   | Inventory                                | Overall utilization                          | Other current telemetry                                                                                                      |
+| ------------------- | ---------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Windows generic     | DXGI name, IDs, memory, LUID             | PDH maximum active WDDM engine               | graphics/compute/copy/encode/decode engine groups when present                                                               |
+| Windows NVIDIA      | DXGI + dynamically loaded NVML           | NVML, with PDH fallback                      | VRAM, temperature, power/energy, clocks, fan, encoder/decoder, processes, and NVIDIA extensions                              |
+| Windows AMD         | DXGI code path; not hardware-tested here | PDH code path; not hardware-tested here      | ADLX is unimplemented/diagnostic-only; no AMD sensor claim                                                                   |
+| Windows Intel       | DXGI/D3DKMT; UHD 770 tested              | PDH tested on UHD 770; optional Sysman       | Sysman engines, GPU/memory clocks, temperature, and GPU power/energy when supported; new provider awaits hardware validation |
+| Linux generic       | PCI + DRM sysfs, driver, IDs             | provider-dependent                           | hwmon sensors where safely attributable                                                                                      |
+| Linux NVIDIA        | sysfs + dynamically loaded NVML          | NVML                                         | NVML metrics and extensions as above                                                                                         |
+| Linux AMD           | PCI/DRM sysfs                            | `gpu_busy_percent`                           | VRAM/GTT, memory busy, hwmon temperature/power/energy/fan, DPM clocks                                                        |
+| Linux Intel i915/Xe | PCI/DRM sysfs                            | optional Level Zero Sysman engine occupancy  | current GT clocks/hwmon, plus optional Sysman clocks, temperatures, GPU power/energy                                         |
+| macOS Apple Silicon | Metal                                    | dynamically loaded IOReport active residency | IOReport GPU power/energy and AppleSMC temperature                                                                           |
+| Intel-era macOS     | Metal best effort                        | unavailable in the validated release         | AppleSMC temperature only when a single GPU can be correlated safely                                                         |
 
 Unknown vendors remain discoverable when DXGI, PCI/DRM, or Metal can enumerate
 them. The Intel+NVIDIA Windows x64 hybrid path is hardware-tested. Windows
@@ -142,6 +142,30 @@ for await (const snapshot of gpu.samples({
 Sampling intervals are actual provider intervals and appear in `intervalMs`.
 The first reading from a delta counter can be `first-sample`; a positive
 one-shot `windowMs` lets the native sampler establish and retry that baseline.
+
+Monitor-wide collection uses the same native sampler as per-GPU streams:
+
+```ts
+const batch = await monitor.sampleAll({ includeProcesses: true });
+for (const { deviceId, snapshot } of batch.gpus) {
+  console.log(deviceId, snapshot.utilization.overall);
+}
+
+const controller = new AbortController();
+for await (const batch of monitor.samplesAll({
+  intervalMs: 1000,
+  signal: controller.signal,
+})) {
+  // Update every GPU in one dashboard refresh.
+}
+```
+
+`sampleAll()` accepts `SampleOptions`; `samplesAll()` accepts `WatchOptions`.
+An empty inventory returns an empty `gpus` array. Each entry has `deviceId` and
+`snapshot`; individual metrics retain their actual timestamps and intervals.
+Batch membership follows the current native inventory, updated by `refresh()`.
+Warmup does not pause other streams. Process enrichment shares scalar telemetry
+with consumers that do not request processes.
 
 ## Refresh and diagnostics
 
@@ -219,11 +243,13 @@ Repository documentation:
 
 ## Known limitations
 
-- ADLX and Level Zero are safe runtime diagnostic boundaries, not telemetry
-  implementations yet.
+- ADLX remains a diagnostic boundary. Level Zero Sysman is implemented on
+  Windows/Linux, with field support determined by the installed Intel driver.
+  The new Intel provider has deterministic coverage; hardware validation is pending.
 - Windows ARM64 is not a supported or packaged target.
-- Accurate Intel Linux device-wide utilization needs Level Zero Sysman or an
-  i915 PMU implementation; per-client DRM fdinfo is not presented as overall.
+- Intel Linux utilization requires an accessible Sysman engine counter. Older
+  drivers, missing runtimes, and counter permissions can leave it unavailable.
+  Per-client DRM fdinfo is not presented as device-wide utilization.
 - Intel-era IOAccelerator telemetry is disabled pending real-hardware validation.
 - Apple IOReport/SMC are private interfaces and may become unavailable after an
   OS update; Metal inventory continues independently.

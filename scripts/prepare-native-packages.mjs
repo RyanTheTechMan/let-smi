@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageRoot = resolve(repositoryRoot, "packages/gpu/npm");
-const license = await readFile(resolve(repositoryRoot, "LICENSE"), "utf8");
+const license = `${await readFile(resolve(repositoryRoot, "LICENSE"), "utf8")}
+
+${await readFile(resolve(repositoryRoot, "packages/gpu/THIRD_PARTY_NOTICES"), "utf8")}`;
 const publicManifest = JSON.parse(
   await readFile(resolve(repositoryRoot, "packages/gpu/package.json"), "utf8"),
 );

@@ -1,6 +1,6 @@
 {
   "name": "let-smi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cross-platform GPU discovery and telemetry for Node.js",
   "license": "MIT",
   "repository": {
@@ -29,7 +29,8 @@
     "dist",
     "native.cjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES"
   ],
   "engines": {
     "node": ">=20"
@@ -54,12 +55,12 @@
     ]
   },
   "optionalDependencies": {
-    "@ryanthetechman/let-smi-darwin-arm64": "0.1.0",
-    "@ryanthetechman/let-smi-darwin-x64": "0.1.0",
-    "@ryanthetechman/let-smi-linux-arm64-gnu": "0.1.0",
-    "@ryanthetechman/let-smi-linux-x64-gnu": "0.1.0",
-    "@ryanthetechman/let-smi-linux-x64-musl": "0.1.0",
-    "@ryanthetechman/let-smi-win32-x64-msvc": "0.1.0"
+    "@ryanthetechman/let-smi-darwin-arm64": "0.2.0",
+    "@ryanthetechman/let-smi-darwin-x64": "0.2.0",
+    "@ryanthetechman/let-smi-linux-arm64-gnu": "0.2.0",
+    "@ryanthetechman/let-smi-linux-x64-gnu": "0.2.0",
+    "@ryanthetechman/let-smi-linux-x64-musl": "0.2.0",
+    "@ryanthetechman/let-smi-win32-x64-msvc": "0.2.0"
   },
   "scripts": {
     "build": "tsup",

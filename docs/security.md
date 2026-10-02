@@ -29,8 +29,8 @@ instead of becoming zero.
 filesystem roots through the Node API or environment variables. The provider
 never writes sysfs or device files.
 
-On Linux, NVML is opened by the standard dynamic loader as
-`libnvidia-ml.so.1`. The implementation does not call `ldconfig` or hard-code a
+On Linux, NVML and Intel Sysman are opened by the standard dynamic loader as
+`libnvidia-ml.so.1` and `libze_loader.so.1`. The implementation does not call `ldconfig` or hard-code a
 distribution library directory because both would break normal container and
 driver-mount behavior. As with other native programs, a deployment that permits
 untrusted control of its loader environment can redirect optional library
@@ -64,9 +64,10 @@ native path, and it never searches `PATH` or the current working directory for
 an addon. Loader error text has control characters removed and is length
 bounded before it is exposed to callers.
 
-ADLX and Level Zero probes use bare system-library names only together with
-`LOAD_LIBRARY_SEARCH_SYSTEM32`; they are presence diagnostics, remain
-`loaded: false`, and expose no telemetry capabilities.
+Windows Intel Sysman uses `ze_loader.dll` only together with
+`LOAD_LIBRARY_SEARCH_SYSTEM32`, excluding the working directory and `PATH`. ADLX
+uses the same restricted search policy for a presence diagnostic, remains
+`loaded: false`, and exposes no telemetry capabilities.
 
 ## FFI bounds
 
@@ -75,6 +76,11 @@ multiplication, x64 structure-size/alignment validation, returned-size checks,
 a maximum of three resize retries, and bounded UTF-16 pointer/terminator
 validation. Malformed layouts return `provider-error`; they do not create
 unchecked slices or panic.
+
+Sysman driver/device/domain enumerations have explicit limits, at most three
+resize retries, and null-handle checks. Generated FFI layouts come from pinned MIT
+headers and are checked at compile time. Power probes accept only explicitly
+attributable GPU domains or discrete card domains.
 
 Driver- and OS-reported strings, device, fan, process, encoder-session, channel, state,
 metric, diagnostic, and JSON collection sizes are capped before or immediately
@@ -86,9 +92,12 @@ native-data error; it is never silently converted to zero.
 ## Concurrency and shutdown
 
 One monitor owns one sampler thread. Its command queue is bounded to 256,
-subscriptions are limited to 128, each subscription allows one pending
+deferred one-shot warmups are limited to 256, subscriptions are limited to 128,
+each subscription allows one pending
 `next()`, and its delivery slot retains only the latest snapshot. Pending
-`next()` calls are waker-driven futures and consume no libuv worker.
+`next()` calls are waker-driven futures and consume no libuv worker. Warmup
+deadlines do not block the sampler. Scalar polling is shared across batch and
+per-device consumers; process enrichment does not advance scalar counter baselines.
 
 Open, one-shot sample, refresh, diagnostics, vendor information, and close use
 NAPI-RS's Tokio blocking runtime. Cancellation closes slots and wakes consumers

@@ -176,6 +176,17 @@ export interface GpuSnapshot {
   readonly processes?: readonly GpuProcessSnapshot[];
 }
 
+export interface GpuDeviceSnapshot {
+  readonly deviceId: string;
+  readonly snapshot: GpuSnapshot;
+}
+
+/** A native collection cycle; individual metrics retain their actual timestamps. */
+export interface GpuMonitorSnapshot {
+  readonly sampledAt: number;
+  readonly gpus: readonly GpuDeviceSnapshot[];
+}
+
 export interface GpuUtilizationCapabilities {
   readonly overall: boolean;
   readonly graphics: boolean;

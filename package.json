@@ -1,6 +1,6 @@
 {
   "name": "let-smi-workspace",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "engines": {
@@ -32,7 +32,8 @@
     "rust:check": "cargo test --workspace --all-targets --locked && cargo clippy --workspace --all-targets --locked -- -D warnings",
     "pack:check": "pnpm --filter let-smi pack:check",
     "pack:test-local": "node scripts/test-packed-package.mjs",
-    "subprocess:check": "node scripts/check-no-subprocess.mjs"
+    "subprocess:check": "node scripts/check-no-subprocess.mjs",
+    "test:intel-hardware": "node scripts/test-intel-process-exit.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -144,30 +144,49 @@ impl TelemetryProvider for PdhProvider {
         ])
     }
 
-    fn sample(&self, device: &CanonicalGpu, _request: &SampleRequest) -> Result<ProviderSample> {
-        let Some(luid) = device
-            .identity
-            .windows
-            .as_ref()
-            .and_then(|windows| windows.luid.as_deref())
-        else {
-            return Ok(ProviderSample::default());
-        };
+    fn sample(&self, device: &CanonicalGpu, request: &SampleRequest) -> Result<ProviderSample> {
+        self.sample_batch(std::slice::from_ref(device), request)
+            .remove(0)
+    }
+
+    fn sample_batch(
+        &self,
+        devices: &[CanonicalGpu],
+        _request: &SampleRequest,
+    ) -> Vec<Result<ProviderSample>> {
         let mut state = self.state.lock();
         let State::Ready(query) = &mut *state else {
-            return Ok(ProviderSample::default());
+            return devices
+                .iter()
+                .map(|_| Ok(ProviderSample::default()))
+                .collect();
         };
-
-        let collection = collect_or_reuse(query)?;
-        let (items, interval_ms) = match collection {
-            PdhCollection::FirstSample => return Ok(first_sample(device)),
-            PdhCollection::Items {
-                values,
-                interval_ms,
-            } => (values, interval_ms),
-        };
-        let engines = aggregate_engines(items, luid);
-        Ok(engine_metrics(&device.identity.id, engines, interval_ms))
+        let collection = collect_or_reuse(query);
+        devices
+            .iter()
+            .map(|device| {
+                let Some(luid) = device
+                    .identity
+                    .windows
+                    .as_ref()
+                    .and_then(|identity| identity.luid.as_deref())
+                else {
+                    return Ok(ProviderSample::default());
+                };
+                match &collection {
+                    Ok(PdhCollection::FirstSample) => Ok(first_sample(device)),
+                    Ok(PdhCollection::Items {
+                        values,
+                        interval_ms,
+                    }) => Ok(engine_metrics(
+                        &device.identity.id,
+                        aggregate_engines(values.clone(), luid),
+                        *interval_ms,
+                    )),
+                    Err(error) => Err(error.clone()),
+                }
+            })
+            .collect()
     }
 
     fn shutdown(&self) {

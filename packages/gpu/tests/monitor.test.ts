@@ -414,3 +414,67 @@ describe("shutdown", () => {
     );
   });
 });
+
+describe("monitor-wide sampling", () => {
+  it("validates and freezes native batches, including empty inventory", async () => {
+    const { api, monitor } = await openFake();
+    const batch = await api.sampleAll({
+      includeProcesses: true,
+      windowMs: 250,
+    });
+    expect(batch.gpus).toHaveLength(1);
+    expect(batch.gpus[0]?.snapshot.utilization.overall).toMatchObject({
+      available: true,
+      value: 0,
+    });
+    expect(Object.isFrozen(batch)).toBe(true);
+    expect(Object.isFrozen(batch.gpus[0])).toBe(true);
+    monitor.gpuDescriptors = [];
+    expect((await api.sampleAll()).gpus).toEqual([]);
+    monitor.sampleAll = () => ({
+      sampledAt: 1,
+      gpus: [
+        { deviceId: "same", snapshot: snapshot() },
+        { deviceId: "same", snapshot: snapshot() },
+      ],
+    });
+    await expect(api.sampleAll()).rejects.toBeInstanceOf(GpuNativeDataError);
+    monitor.sampleAll = () => ({
+      sampledAt: 1,
+      gpus: [{ deviceId: "gpu", snapshot: snapshot(available(101)) }],
+    });
+    await expect(api.sampleAll()).rejects.toBeInstanceOf(GpuNativeDataError);
+    await api.close();
+    await expect(api.sampleAll()).rejects.toBeInstanceOf(GpuMonitorClosedError);
+  });
+
+  it("cancels batch streams on break, abort, invalid payload, and monitor close", async () => {
+    const { api, monitor } = await openFake();
+    const value = await api.sampleAll();
+    monitor.subscription = new QueueSubscription([value]);
+    for await (const batch of api.samplesAll()) {
+      expect(batch).toEqual(value);
+      break;
+    }
+    expect(monitor.subscription.cancelCalls).toBe(1);
+    monitor.subscription = new QueueSubscription([value]);
+    const controller = new AbortController();
+    const stream = api.samplesAll({ signal: controller.signal });
+    await stream.next();
+    const pending = stream.next();
+    controller.abort();
+    expect((await pending).done).toBe(true);
+    expect(monitor.subscription.cancelCalls).toBe(1);
+    monitor.subscription = new QueueSubscription([{}]);
+    await expect(api.samplesAll().next()).rejects.toBeInstanceOf(
+      GpuNativeDataError,
+    );
+    expect(monitor.subscription.cancelCalls).toBe(1);
+    monitor.subscription = new QueueSubscription([value]);
+    const closing = api.samplesAll();
+    await closing.next();
+    const closingNext = closing.next();
+    await api.close();
+    expect((await closingNext).done).toBe(true);
+  });
+});

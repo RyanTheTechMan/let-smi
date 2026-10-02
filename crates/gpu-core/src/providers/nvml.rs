@@ -821,7 +821,7 @@ mod implementation {
             );
         }
 
-        if request.include_processes && capabilities.supports(MetricKey::Processes) {
+        if request.include_processes && wants(MetricKey::Processes) {
             match collect_processes(nvml, device, sampled_at) {
                 Ok(processes) => sample.processes = Some(processes),
                 Err(FieldError::Nvml(error)) => push_nvml_error(

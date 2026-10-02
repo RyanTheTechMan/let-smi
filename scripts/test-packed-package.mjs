@@ -105,7 +105,20 @@ try {
     `
       import { GpuMonitor } from "let-smi";
       const monitor = await GpuMonitor.open();
-      try { console.log((await monitor.gpus()).length); }
+      try {
+        const gpus = await monitor.gpus();
+        const batch = await monitor.sampleAll({ windowMs: 1 });
+        if (JSON.stringify(batch.gpus.map(gpu => gpu.deviceId)) !== JSON.stringify(gpus.map(gpu => gpu.id))) {
+          throw new Error("packed batch inventory mismatch");
+        }
+        const controller = new AbortController();
+        const stream = monitor.samplesAll({ intervalMs: 60_000, signal: controller.signal });
+        await stream.next();
+        const pending = stream.next();
+        controller.abort();
+        if (!(await pending).done) throw new Error("packed batch stream abort failed");
+        console.log(gpus.length);
+      }
       finally { await monitor.close(); }
     `,
     ["--input-type=module"],
@@ -116,7 +129,20 @@ try {
       const { GpuMonitor } = require("let-smi");
       (async () => {
         const monitor = await GpuMonitor.open();
-        try { console.log((await monitor.gpus()).length); }
+        try {
+          const gpus = await monitor.gpus();
+          const batch = await monitor.sampleAll({ windowMs: 1 });
+          if (JSON.stringify(batch.gpus.map(gpu => gpu.deviceId)) !== JSON.stringify(gpus.map(gpu => gpu.id))) {
+            throw new Error("packed batch inventory mismatch");
+          }
+          const controller = new AbortController();
+          const stream = monitor.samplesAll({ intervalMs: 60_000, signal: controller.signal });
+          await stream.next();
+          const pending = stream.next();
+          controller.abort();
+          if (!(await pending).done) throw new Error("packed batch stream abort failed");
+          console.log(gpus.length);
+        }
         finally { await monitor.close(); }
       })();
     `,

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub struct MockProvider {
     metadata: ProviderMetadata,
-    devices: Vec<DeviceObservation>,
+    devices: Mutex<Vec<DeviceObservation>>,
     samples: Mutex<VecDeque<ProviderSample>>,
     fallback_sample: ProviderSample,
     sample_count: AtomicUsize,
@@ -26,7 +26,7 @@ impl MockProvider {
         let fallback_sample = samples.last().cloned().unwrap_or_default();
         Self {
             metadata,
-            devices,
+            devices: Mutex::new(devices),
             samples: Mutex::new(samples.into()),
             fallback_sample,
             sample_count: AtomicUsize::new(0),
@@ -36,6 +36,10 @@ impl MockProvider {
 
     pub fn was_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
+    }
+
+    pub fn replace_devices(&self, devices: Vec<DeviceObservation>) {
+        *self.devices.lock() = devices;
     }
 
     pub fn sample_count(&self) -> usize {
@@ -49,7 +53,7 @@ impl InventoryProvider for MockProvider {
     }
 
     fn enumerate(&self) -> Result<Vec<DeviceObservation>> {
-        Ok(self.devices.clone())
+        Ok(self.devices.lock().clone())
     }
 
     fn diagnostic(&self) -> ProviderDiagnostic {
@@ -57,7 +61,7 @@ impl InventoryProvider for MockProvider {
             id: self.metadata.id.into(),
             loaded: true,
             version: Some("mock".into()),
-            devices_matched: self.devices.len(),
+            devices_matched: self.devices.lock().len(),
             reason: None,
             message: None,
         }
@@ -72,6 +76,7 @@ impl TelemetryProvider for MockProvider {
     fn capabilities(&self, device: &CanonicalGpu) -> CapabilitySet {
         if device.provider_device_ids.contains_key(self.metadata.id) {
             self.devices
+                .lock()
                 .iter()
                 .find(|candidate| {
                     device
@@ -92,6 +97,13 @@ impl TelemetryProvider for MockProvider {
             .lock()
             .pop_front()
             .unwrap_or_else(|| self.fallback_sample.clone()))
+    }
+
+    fn sample_processes(&self, _device: &CanonicalGpu) -> Result<ProviderSample> {
+        Ok(ProviderSample {
+            processes: self.fallback_sample.processes.clone(),
+            ..ProviderSample::default()
+        })
     }
 
     fn shutdown(&self) {

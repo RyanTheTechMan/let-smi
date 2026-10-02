@@ -65,10 +65,15 @@ Core tests use mock providers and injected Linux filesystem roots. They cover:
 - NVML conversions and unavailable-platform behavior without an NVIDIA GPU;
 - IOReport state/energy calculations and AppleSMC key decoding without relying
   on a particular sensor value;
-- subscription coalescing, cancellation wake-up, monitor-close wake-up, and
+- batch/per-GPU scalar coalescing with mixed process settings, nonblocking
+  warmup, empty inventory, Rust metric-filter compatibility, cancellation
+  wake-up, monitor-close wake-up, and
   idempotent provider shutdown;
 - bounded sampler commands/subscriptions, one in-flight `next()`, nonblocking
   finalization, and close-aware queued calls;
+- injected Intel Sysman enumeration, partial support, counter resets,
+  device-wide aggregate preference, maximum-group fallback, GPU power attribution,
+  and sensor permission failures independent of other fields;
 - trusted Windows NVML candidates and malformed/oversized/truncated PDH arrays.
 
 Windows x64 is the only packaged Windows target in this release. Linux
@@ -144,7 +149,7 @@ Diagnostic output is appropriate for bug reports because it contains provider
 status and merge choices, but no environment variables, command output, file
 contents, or unrelated system inventory.
 
-## Observed Windows x64 validation — 2026-08-12
+## Observed Windows x64 validation — 0.1.0, 2026-08-12
 
 Hardware-tested on Windows 10 Pro display version 25H2, build 26200.8973, x64,
 as a normal user. The host had one Intel UHD Graphics 770 and one NVIDIA
@@ -193,7 +198,7 @@ It skips cleanly unless Windows x64 has exactly one Intel and one NVIDIA
 physical adapter with functional PDH and NVML. The parent process enforces the
 exit deadline.
 
-## Observed Linux x64 validation — 2026-08-12
+## Observed Linux x64 validation — 0.1.0, 2026-08-12
 
 Hardware-tested as a normal user on Bazzite 44, kernel
 7.1.5-ogc5.1.fc44.x86_64, x86_64 glibc 2.43. Tooling was Node 26.7.0, pnpm
@@ -260,3 +265,29 @@ scan completes.
 
 The `Verify published release` GitHub workflow can rerun this registry matrix
 for an already-published version without rebuilding or republishing it.
+
+## 0.2.0 Intel and monitor-wide release validation
+
+After building the native addon and public package on each Intel host, run:
+
+```sh
+pnpm check
+pnpm native:build:release
+pnpm build
+pnpm native:test-loader
+pnpm test:intel-hardware --require-intel-telemetry
+```
+
+The Intel test requires Windows or Linux and validates batch inventory/IDs,
+provenance and bounds, four pending streams, process options, abort and early
+break, worker isolation, refresh/reopen, and clean shutdown. Its parent enforces
+a 40-second exit deadline. The required mode fails when no Sysman field is
+available; Linux also requires measured Intel utilization. Without that flag,
+non-Intel hosts skip cleanly and missing telemetry is reported without being
+mistaken for hardware validation.
+
+On an Intel/NVIDIA hybrid host, additionally run the existing
+`pnpm test:windows-hardware` or `pnpm test:linux-hardware`. Save the JSON report
+from the Intel test, which records device and driver identity, capabilities,
+observed fields, measured intervals, and diagnostics. Hardware validation for the
+new Intel provider is currently pending on both platforms.

@@ -243,7 +243,11 @@ async function testMonitor() {
       "NVIDIA dedicated memory topology is missing",
     );
     if (intelSnapshot.utilization.overall.available) {
-      assert.equal(intelSnapshot.utilization.overall.source, "windows-pdh");
+      assert(
+        ["windows-pdh", "level-zero"].includes(
+          intelSnapshot.utilization.overall.source,
+        ),
+      );
     }
     if (nvidiaSnapshot.utilization.overall.available) {
       assert.equal(nvidiaSnapshot.utilization.overall.source, "nvml");
@@ -275,7 +279,7 @@ async function testMonitor() {
     if (nvidiaInfo.vbiosVersion !== undefined) {
       assert.equal(nvidiaInfo.vbiosVersion, nvidia.identity.firmwareVersion);
     }
-    assert.deepEqual(await intel.intelInfo(), {});
+    assert.equal(typeof (await intel.intelInfo()), "object");
 
     report.observedMetrics = {
       intel: {
@@ -394,7 +398,7 @@ async function testMonitor() {
       /NVML loaded securely from the Windows system directory|NVML loaded securely from the NVIDIA NVSMI directory under Program Files/u,
     );
     assert.equal(provider("amd-adlx")?.loaded, false);
-    assert.equal(provider("level-zero")?.loaded, false);
+    assert.equal(typeof provider("level-zero")?.loaded, "boolean");
     for (const selection of diagnostics.metricSelections ?? []) {
       assert(selection.candidates.length > 0);
       assert.equal(

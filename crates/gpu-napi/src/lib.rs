@@ -1,6 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use let_smi_core::sampler::{SampleSubscription, WatchOptions};
+use let_smi_core::sampler::{BatchSampleSubscription, SampleSubscription, WatchOptions};
 use let_smi_core::{GpuError, GpuMonitor};
 use napi::bindgen_prelude::{ToNapiValue, TypeName};
 use napi::{Error, Status, ValueType};
@@ -60,6 +60,29 @@ impl NativeMonitor {
             .map_err(to_napi_error)?;
         Ok(NativeSubscription {
             subscription: Arc::new(subscription),
+        })
+    }
+
+    #[napi(js_name = "sampleAll")]
+    pub async fn sample_all(&self, options: Option<Value>) -> napi::Result<JsonValue> {
+        let request = decode_options(options)?;
+        let monitor = self.monitor.clone();
+        let output = napi::bindgen_prelude::spawn_blocking(move || monitor.sample_all(request))
+            .await
+            .map_err(to_join_error)?
+            .map_err(to_napi_error)?;
+        to_js_value(output).map(JsonValue).map_err(to_napi_error)
+    }
+
+    #[napi(js_name = "subscribeAll")]
+    pub fn subscribe_all(&self, options: Option<Value>) -> napi::Result<NativeBatchSubscription> {
+        let options: NativeWatchOptions = decode_options(options)?;
+        Ok(NativeBatchSubscription {
+            subscription: Arc::new(
+                self.monitor
+                    .samples_all(options.into())
+                    .map_err(to_napi_error)?,
+            ),
         })
     }
 
@@ -127,6 +150,36 @@ impl NativeSubscription {
 }
 
 impl Drop for NativeSubscription {
+    fn drop(&mut self) {
+        self.subscription.cancel();
+    }
+}
+
+#[napi]
+pub struct NativeBatchSubscription {
+    subscription: Arc<BatchSampleSubscription>,
+}
+
+#[napi]
+impl NativeBatchSubscription {
+    #[napi]
+    pub async fn next(&self) -> napi::Result<Option<JsonValue>> {
+        self.subscription
+            .next_async()
+            .map_err(to_napi_error)?
+            .await
+            .map_err(to_napi_error)?
+            .map(|output| to_js_value(output).map(JsonValue))
+            .transpose()
+            .map_err(to_napi_error)
+    }
+    #[napi]
+    pub fn cancel(&self) {
+        self.subscription.cancel();
+    }
+}
+
+impl Drop for NativeBatchSubscription {
     fn drop(&mut self) {
         self.subscription.cancel();
     }

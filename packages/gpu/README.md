@@ -49,15 +49,16 @@ if (metric.available) {
 
 ## Current provider coverage
 
-| Platform            | Inventory                                                          | `utilization.overall` and live telemetry                                                                                                   |
-| ------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Windows x64         | DXGI/D3DKMT for NVIDIA/Intel/unknown; AMD generic path is untested | PDH WDDM engine utilization; securely loaded NVML adds NVIDIA memory, sensors, clocks, fans, processes, and extensions                     |
-| Linux               | PCI + DRM sysfs on x64/ARM64                                       | NVML for NVIDIA; AMD kernel busy/memory plus hwmon sensors; Intel i915/Xe clocks and sensors (device-wide utilization remains unavailable) |
-| macOS Apple Silicon | Metal                                                              | dynamically loaded IOReport active residency/power plus AppleSMC temperature                                                               |
-| Intel-era macOS     | Metal best effort                                                  | AppleSMC temperature only when safely correlatable; IOAccelerator utilization is not enabled without hardware validation                   |
+| Platform            | Inventory                                                          | `utilization.overall` and live telemetry                                                                                                        |
+| ------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows x64         | DXGI/D3DKMT for NVIDIA/Intel/unknown; AMD generic path is untested | PDH WDDM engines; optional Intel Sysman engines/sensors/clocks/power; NVML adds NVIDIA memory, sensors, clocks, fans, processes, and extensions |
+| Linux               | PCI + DRM sysfs on x64/ARM64                                       | NVML for NVIDIA; AMD kernel busy/memory plus hwmon; Intel i915/Xe clocks and sensors plus optional Level Zero Sysman engine occupancy           |
+| macOS Apple Silicon | Metal                                                              | dynamically loaded IOReport active residency/power plus AppleSMC temperature                                                                    |
+| Intel-era macOS     | Metal best effort                                                  | AppleSMC temperature only when safely correlatable; IOAccelerator utilization is not enabled without hardware validation                        |
 
-ADLX and Level Zero are unimplemented, diagnostic-only runtime boundaries in
-this release. Windows ARM64 is not a supported package target.
+ADLX remains an unimplemented, diagnostic-only runtime boundary. Intel Level Zero
+Sysman telemetry is implemented on Windows and Linux; its new backend still awaits
+hardware validation on both platforms. Windows ARM64 is not a supported package target.
 Missing libraries do not stop the generic providers. No runtime provider invokes
 `nvidia-smi`, `amd-smi`, `intel_gpu_top`, `powermetrics`, or another executable.
 
@@ -78,6 +79,33 @@ for await (const snapshot of gpu.samples({
   console.log(snapshot.utilization.overall);
 }
 ```
+
+## Sampling every GPU
+
+`sampleAll()` returns a `GpuMonitorSnapshot` with a batch timestamp and an ordered
+`gpus` array of `{ deviceId, snapshot }` entries. `samplesAll()` streams the same
+shape and shares native scalar polling with per-GPU streams, including when
+consumers request different process settings. Empty inventory produces `gpus: []`.
+Each batch uses current inventory, so future batches reflect `monitor.refresh()`.
+Per-metric timestamps and intervals remain authoritative.
+
+```ts
+const batch = await monitor.sampleAll({ windowMs: 1000 });
+for (const { deviceId, snapshot } of batch.gpus) {
+  console.log(deviceId, snapshot.utilization.overall);
+}
+
+const controller = new AbortController();
+for await (const batch of monitor.samplesAll({
+  intervalMs: 1000,
+  signal: controller.signal,
+})) {
+  console.log(batch.sampledAt, batch.gpus);
+}
+```
+
+One-shot warmup waits asynchronously on the native sampler schedule, allowing
+other streams and refresh requests to continue.
 
 ## Capabilities and diagnostics
 

@@ -1,9 +1,23 @@
 use crate::merge::MergedMetrics;
 use crate::model::{
     CanonicalGpu, GpuProcessSnapshot, MemoryTopology, Metric, MetricKey, MetricObservation,
-    ProviderId, TimestampMs, UnavailableReason,
+    ProviderId, SampleRequest, TimestampMs, UnavailableReason,
 };
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuDeviceSnapshot {
+    pub device_id: String,
+    pub snapshot: GpuSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuMonitorSnapshot {
+    pub sampled_at: TimestampMs,
+    pub gpus: Vec<GpuDeviceSnapshot>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,6 +170,56 @@ pub fn build_snapshot(
             rpm: metric(MetricKey::FanRpm),
         },
         processes,
+    }
+}
+
+// Shared polls collect scalar fields once. Preserve the Rust caller's selection
+// and the ordinary unavailable/omitted shape for fields it did not request.
+pub(crate) fn filter_snapshot(
+    snapshot: &mut GpuSnapshot,
+    gpu: &CanonicalGpu,
+    request: &SampleRequest,
+) {
+    if request.metrics.is_some() {
+        let empty = build_snapshot(gpu, &MergedMetrics::default(), snapshot.sampled_at, None);
+        macro_rules! filter {
+            ($key:ident, $group:ident.$field:ident) => {
+                if !request.wants(MetricKey::$key) {
+                    snapshot.$group.$field = empty.$group.$field;
+                }
+            };
+        }
+        filter!(UtilizationOverall, utilization.overall);
+        filter!(UtilizationGraphics, utilization.graphics);
+        filter!(UtilizationCompute, utilization.compute);
+        filter!(UtilizationCopy, utilization.copy);
+        filter!(UtilizationMemoryController, utilization.memory_controller);
+        filter!(UtilizationEncoder, utilization.encoder);
+        filter!(UtilizationDecoder, utilization.decoder);
+        filter!(MemoryDedicatedUsedBytes, memory.dedicated_used_bytes);
+        filter!(MemorySharedUsedBytes, memory.shared_used_bytes);
+        filter!(MemoryUnifiedUsedBytes, memory.unified_used_bytes);
+        filter!(MemoryBudgetBytes, memory.budget_bytes);
+        filter!(
+            MemoryBandwidthUtilizationPercent,
+            memory.bandwidth_utilization_percent
+        );
+        filter!(TemperatureCoreCelsius, temperatures.core_celsius);
+        filter!(TemperatureEdgeCelsius, temperatures.edge_celsius);
+        filter!(TemperatureHotspotCelsius, temperatures.hotspot_celsius);
+        filter!(TemperatureMemoryCelsius, temperatures.memory_celsius);
+        filter!(PowerDrawWatts, power.draw_watts);
+        filter!(PowerLimitWatts, power.limit_watts);
+        filter!(PowerEnergyJoules, power.energy_joules);
+        filter!(ClockGraphicsMhz, clocks.graphics_mhz);
+        filter!(ClockComputeMhz, clocks.compute_mhz);
+        filter!(ClockMemoryMhz, clocks.memory_mhz);
+        filter!(ClockVideoMhz, clocks.video_mhz);
+        filter!(FanPercent, fan.percent);
+        filter!(FanRpm, fan.rpm);
+    }
+    if !request.include_processes || !request.wants(MetricKey::Processes) {
+        snapshot.processes = None;
     }
 }
 

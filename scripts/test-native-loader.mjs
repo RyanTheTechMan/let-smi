@@ -35,6 +35,21 @@ async function smoke(GpuMonitor, moduleKind) {
       "GPU ids must be unique",
     );
 
+    const batch = await monitor.sampleAll();
+    assert.deepEqual(
+      batch.gpus.map((gpu) => gpu.deviceId),
+      gpus.map((gpu) => gpu.id),
+    );
+    const controller = new AbortController();
+    const stream = monitor.samplesAll({
+      intervalMs: 60_000,
+      signal: controller.signal,
+    });
+    assert.equal((await stream.next()).done, false);
+    const pending = stream.next();
+    controller.abort();
+    assert.equal((await pending).done, true);
+
     const diagnostics = await monitor.diagnostics();
     assert.equal(typeof diagnostics.platform, "string");
     assert.equal(typeof diagnostics.arch, "string");

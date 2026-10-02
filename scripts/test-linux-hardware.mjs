@@ -399,9 +399,11 @@ async function testMonitor() {
       source: "nvml",
     });
 
-    assert.equal(intel.capabilities.utilization.overall, false);
-    assert.equal(intelSnapshot.utilization.overall.available, false);
-    assert.equal(intelSnapshot.utilization.overall.reason, "unsupported");
+    assertPercentage(
+      intelSnapshot.utilization.overall,
+      "intel.overall",
+      "level-zero",
+    );
     for (const [name, metric] of Object.entries({
       clock: intelSnapshot.clocks.graphicsMHz,
       temperature: intelSnapshot.temperatures.coreCelsius,
@@ -410,7 +412,7 @@ async function testMonitor() {
       assertMetric(metric, `intel.${name}`, {
         minimum: name === "temperature" ? -100 : 0,
         maximum: name === "temperature" ? 250 : 100_000,
-        source: "linux-sysfs",
+        source: metric?.source === "level-zero" ? "level-zero" : "linux-sysfs",
       });
     }
 

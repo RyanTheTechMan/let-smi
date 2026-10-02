@@ -145,6 +145,26 @@ export class FakeMonitor implements NativeMonitorHandle {
     return this.subscription;
   }
 
+  sampleAll(options: {
+    readonly windowMs?: number;
+    readonly includeProcesses?: boolean;
+  }): unknown {
+    return {
+      sampledAt: 1_720_000_000_000,
+      gpus: this.gpuDescriptors.map((_, index) => ({
+        deviceId: `batch-${String(index)}`,
+        snapshot: this.sampleGpu(`batch-${String(index)}`, options),
+      })),
+    };
+  }
+
+  subscribeAll(options: {
+    readonly intervalMs?: number;
+    readonly includeProcesses?: boolean;
+  }): unknown {
+    return this.subscribeGpu("all", options);
+  }
+
   vendorInfo(id: string): unknown {
     this.vendorInfoCalls.push(id);
     return this.vendorInfoValue;

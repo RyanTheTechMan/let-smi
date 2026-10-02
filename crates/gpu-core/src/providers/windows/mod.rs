@@ -16,10 +16,5 @@ pub fn providers(options: &MonitorOptions) -> Vec<Arc<dyn Provider>> {
             "amdadlx64.dll",
             "ADLX runtime detected; the SDK-governed telemetry adapter requires separate legal review",
         )),
-        Arc::new(runtime_probe::WindowsRuntimeProbe::system32(
-            "level-zero",
-            "ze_loader.dll",
-            "Level Zero loader detected; Sysman telemetry is not available in this build",
-        )),
     ]
 }

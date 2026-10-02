@@ -41,18 +41,20 @@ promise that every future sample succeeds.
 All ordinary utilization fields are percentages in 0–100. The exact current
 backend definition is also copied into `metric.definition`.
 
-| Source               | Definition                                                                                          | Quality and interval                                                                                                                       |
-| -------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `nvml`               | Percentage of NVML's internal sample period during which one or more kernels executed on the GPU    | `direct`; NVML does not expose the overall sample duration through this call, so `intervalMs` is absent                                    |
-| `windows-pdh`        | Maximum active WDDM engine percentage across the correlated adapter                                 | `derived`; processes are summed per physical engine, then the maximum engine is selected; `intervalMs` is the real PDH collection interval |
-| `linux-sysfs` on AMD | Value of the kernel driver's `gpu_busy_percent`, described as SMU-reported GPU busy percentage      | `direct`; point reading with no library-controlled interval                                                                                |
-| `apple-ioreport`     | Non-idle GPU performance-state residency divided by total GPU state residency over the sample delta | `derived`; `intervalMs` is the monotonic delta interval                                                                                    |
-| Intel Linux          | No accurate device-wide provider in this release                                                    | unavailable; per-client DRM fdinfo is not silently promoted to overall                                                                     |
-| Intel-era macOS      | No validated live provider in this release                                                          | unavailable; private IOAccelerator values are not guessed                                                                                  |
+| Source                              | Definition                                                                                          | Quality and interval                                                                                                                       |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `nvml`                              | Percentage of NVML's internal sample period during which one or more kernels executed on the GPU    | `direct`; NVML does not expose the overall sample duration through this call, so `intervalMs` is absent                                    |
+| `windows-pdh`                       | Maximum active WDDM engine percentage across the correlated adapter                                 | `derived`; processes are summed per physical engine, then the maximum engine is selected; `intervalMs` is the real PDH collection interval |
+| `linux-sysfs` on AMD                | Value of the kernel driver's `gpu_busy_percent`, described as SMU-reported GPU busy percentage      | `direct`; point reading with no library-controlled interval                                                                                |
+| `apple-ioreport`                    | Non-idle GPU performance-state residency divided by total GPU state residency over the sample delta | `derived`; `intervalMs` is the monotonic delta interval                                                                                    |
+| `level-zero` on Intel Windows/Linux | Device-wide all-engine active-time delta, or maximum measured engine-group occupancy if unavailable | `derived`; `intervalMs` is the monotonic observation interval; native counters determine occupancy; groups are never summed                |
+| Intel-era macOS                     | No validated live provider in this release                                                          | unavailable; private IOAccelerator values are not guessed                                                                                  |
 
 The merge engine selects one of these definitions; it never averages or adds
 incompatible overall values. On Windows NVIDIA, NVML normally wins over PDH.
-AMD/Intel Windows use PDH until a vendor-specific provider is implemented.
+AMD Windows uses PDH. Intel Windows prefers Sysman where supported and falls
+back to PDH; Intel Linux needs Sysman for overall utilization. Per-client DRM
+fdinfo is not promoted to device-wide utilization.
 
 ### Engine utilization
 
@@ -62,6 +64,9 @@ AMD/Intel Windows use PDH until a vendor-specific provider is implemented.
 - PDH graphics/compute/copy/encoder/decoder values are the maximum matching WDDM
   engine percentage after per-process instances for the same physical engine
   are summed.
+- Intel Sysman uses explicitly typed compute, graphics, copy, encode, and decode
+  engine groups. Combined media counters are not guessed into encode/decode.
+  `intelInfo().engineGroups` retains the last measured values without polling again.
 - AMD `bandwidthUtilizationPercent` maps to `mem_busy_percent` and is not the
   same semantic as bytes-per-second bandwidth saturation on every vendor.
 
@@ -100,6 +105,8 @@ range to reject corrupt sensor encodings.
   edge/junction/memory.
 - An unlabelled primary non-AMD hwmon sensor is `coreCelsius` with `estimated`
   quality.
+- Intel Sysman GPU/memory temperature domains map to their corresponding fields;
+  multiple attributable readings use the maximum and describe the aggregation.
 - AppleSMC exact GPU keys map to `coreCelsius`; one sensor is direct and an
   arithmetic mean of multiple die sensors is estimated.
 
@@ -114,6 +121,9 @@ Power is watts and energy is joules.
   enforced limit. NVML energy is cumulative since the last driver reload.
 - Linux hwmon micro-watts/micro-joules are converted by exactly 1,000,000.
   Energy inputs are cumulative if the kernel attribute is cumulative.
+- Intel Sysman energy is cumulative GPU/card-domain energy converted from
+  microjoules; power is its delta divided by the resource timestamp delta in
+  microseconds. CPU/package and integrated card domains are excluded.
 - Apple IOReport energy is the interval delta. `drawWatts` is that delta divided
   by the monotonic interval. A zero energy delta produces available zero power,
   not unavailable.
@@ -126,7 +136,8 @@ Because `energyJoules` can be cumulative or interval-local, consumers must read
 Clocks are MHz. NVML clock domains map directly to graphics, compute/SM, memory,
 and video. AMD active DPM states and Intel i915/Xe frequency attributes are
 strictly parsed; multiple Intel GT/tile readings use the maximum current clock
-and describe that aggregation.
+and describe that aggregation. Intel Sysman uses actual GPU/memory-domain
+frequency, taking the maximum for multiple attributable domains.
 
 Fan speed is either RPM or percent. NVML multi-fan values are arithmetic means
 with the aggregation in `definition`. Linux PWM is converted to percent using
