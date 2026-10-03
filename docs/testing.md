@@ -423,7 +423,7 @@ node scripts/test-intel-hardware.mjs --require-intel-telemetry > artifacts/windo
 **Linux Intel/Sysman hardware validation remains pending.** Neither the historical
 Linux NVIDIA-only 0.1.0 run nor the Bazzite 0.2.0 run below satisfies it.
 
-### Observed Bazzite Linux validation — 0.2.0, 2026-10-02
+### Observed Bazzite NVIDIA-only validation — 0.2.0, 2026-10-02
 
 Fetched origin from an existing checkout at `c5f655d` with local changes. Origin
 resolved to the requested baseline `1195b74c8a77df5cb4d4ed9c669618482f7b078b`.

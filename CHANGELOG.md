@@ -20,8 +20,8 @@
   validated alongside RTX 4070 Ti NVML. Intel temperature/power are unsupported on
   that driver and remain unavailable.
 - Linux RTX 4060 Ti NVML and sampling lifecycle checks passed five consecutive
-  runs on Bazzite. That host exposed no Intel GPU or Level Zero runtime, so Linux
-  Intel/Sysman and Intel/NVIDIA hybrid operation remain unvalidated.
+  runs on the NVIDIA-only Bazzite host. Linux Intel/Sysman hardware validation
+  remains untested.
 - One Windows hybrid run exceeded the existing 20-second watchdog. Subsequent
   instrumented runs passed, but the original cause remains unexplained.
 

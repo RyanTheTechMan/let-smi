@@ -245,13 +245,11 @@ Repository documentation:
 
 - ADLX remains a diagnostic boundary. Level Zero Sysman is implemented on
   Windows/Linux, with field support determined by the installed Intel driver.
-  Sysman occupancy and GPU clock were validated on Windows UHD 770; Linux Intel
-  hardware validation remains pending: the 0.2.0 Bazzite host exposed only an
-  RTX 4060 Ti and lacked Level Zero runtimes. NVIDIA NVML and sampling lifecycle
-  checks passed five consecutive runs there; Intel-required runs failed and hybrid
-  runs skipped. Version 0.2.0 is prepared for release with this
-  coverage gap and the unresolved Windows watchdog caveat documented in
-  [testing](docs/testing.md).
+  Sysman occupancy and GPU clock were validated on Windows UHD 770. NVIDIA NVML
+  and sampling lifecycle checks passed five consecutive runs on the NVIDIA-only
+  Bazzite host. Linux Intel hardware validation remains untested. Version 0.2.0
+  is prepared for release with that coverage gap and the unresolved Windows
+  watchdog caveat documented in [testing](docs/testing.md).
 - Windows ARM64 is not a supported or packaged target.
 - Intel Linux utilization requires an accessible Sysman engine counter. Older
   drivers, missing runtimes, and counter permissions can leave it unavailable.
