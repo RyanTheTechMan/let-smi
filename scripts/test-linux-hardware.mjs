@@ -12,6 +12,10 @@ const packageEntry = pathToFileURL(
 const fixturePath = fileURLToPath(import.meta.url);
 const { GpuMonitor } = await import(packageEntry);
 
+function phase(name) {
+  console.error(`Linux hardware phase: ${name}`);
+}
+
 async function withDeadline(promise, milliseconds, label) {
   let timer;
   try {
@@ -193,11 +197,17 @@ async function testWorkerIsolation(expectedIds) {
   const ids = await withDeadline(
     new Promise((resolvePromise, reject) => {
       const worker = new Worker(source, { eval: true, type: "module" });
-      worker.once("message", resolvePromise);
+      let observedIds;
+      worker.once("message", (value) => {
+        observedIds = value;
+      });
       worker.once("error", reject);
       worker.once("exit", (code) => {
         if (code !== 0)
           reject(new Error(`worker exited with code ${String(code)}`));
+        else if (observedIds === undefined)
+          reject(new Error("worker exited without reporting its inventory"));
+        else resolvePromise(observedIds);
       });
     }),
     10_000,
@@ -228,6 +238,7 @@ async function environmentReport() {
 }
 
 async function testMonitor() {
+  phase("discovery, refresh, and scalar telemetry");
   const monitor = await GpuMonitor.open();
   let expectedIds;
   const report = { environment: await environmentReport() };
@@ -427,6 +438,7 @@ async function testMonitor() {
       }
     }
 
+    phase("pending streams and cancellation");
     const streamControllers = Array.from(
       { length: 4 },
       () => new AbortController(),
@@ -470,6 +482,7 @@ async function testMonitor() {
       { value: undefined, done: true },
     );
 
+    phase("provider priorities and diagnostics");
     const diagnostics = await monitor.diagnostics();
     assert.equal(provider(diagnostics, "linux-sysfs")?.loaded, true);
     assert(provider(diagnostics, "linux-sysfs").devicesMatched >= 2);
@@ -560,11 +573,13 @@ async function testMonitor() {
       },
     ];
   } finally {
+    phase("main monitor close");
     const closeStarted = performance.now();
     await withDeadline(monitor.close(), 3_000, "monitor.close()");
     report.closeMs = Math.round(performance.now() - closeStarted);
   }
 
+  phase("close with four pending reads");
   const closeMonitor = await GpuMonitor.open();
   const closeNvidia = (await closeMonitor.gpus()).find(
     (gpu) => gpu.vendor === "nvidia",
@@ -587,6 +602,7 @@ async function testMonitor() {
   }
   await assert.rejects(closeMonitor.gpus(), /closed/iu);
 
+  phase("monitor reopen");
   const reopened = await GpuMonitor.open();
   try {
     assert.deepEqual(
@@ -596,10 +612,12 @@ async function testMonitor() {
   } finally {
     await reopened.close();
   }
+  phase("worker inventory and clean exit");
   await testWorkerIsolation(expectedIds);
   return report;
 }
 
+phase("prerequisites");
 const skipReason = await checkPrerequisites();
 if (skipReason !== undefined) {
   console.log(JSON.stringify({ skipped: true, reason: skipReason }));

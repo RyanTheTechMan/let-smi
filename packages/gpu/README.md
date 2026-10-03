@@ -57,8 +57,12 @@ if (metric.available) {
 | Intel-era macOS     | Metal best effort                                                  | AppleSMC temperature only when safely correlatable; IOAccelerator utilization is not enabled without hardware validation                        |
 
 ADLX remains an unimplemented, diagnostic-only runtime boundary. Intel Level Zero
-Sysman telemetry is implemented on Windows and Linux; its new backend still awaits
-hardware validation on both platforms. Windows ARM64 is not a supported package target.
+Sysman telemetry is implemented on Windows and Linux. Windows UHD 770 engine
+occupancy and GPU frequency were validated for 0.2.0, with an unresolved Windows
+watchdog outlier. Linux Intel/Sysman validation remains pending: the Bazzite 0.2.0
+host exposed only an RTX 4060 Ti and lacked Level Zero runtimes, so Intel-required
+runs failed and hybrid runs skipped. Separate NVIDIA NVML and sampling lifecycle
+checks passed five consecutive runs. Windows ARM64 is not a supported package target.
 Missing libraries do not stop the generic providers. No runtime provider invokes
 `nvidia-smi`, `amd-smi`, `intel_gpu_top`, `powermetrics`, or another executable.
 

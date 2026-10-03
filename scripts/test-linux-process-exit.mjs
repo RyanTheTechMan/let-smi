@@ -27,7 +27,7 @@ const result = await new Promise((resolvePromise, reject) => {
     child.kill();
     reject(
       new Error(
-        `Linux hardware child did not exit within ${String(deadlineMs)} ms`,
+        `Linux hardware child did not exit within ${String(deadlineMs)} ms; child stderr:\n${stderr}`,
       ),
     );
   }, deadlineMs);
@@ -35,7 +35,7 @@ const result = await new Promise((resolvePromise, reject) => {
     clearTimeout(timer);
     reject(error);
   });
-  child.once("exit", (code, signal) => {
+  child.once("close", (code, signal) => {
     clearTimeout(timer);
     resolvePromise({ code, signal, stdout, stderr });
   });

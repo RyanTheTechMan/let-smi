@@ -9,6 +9,10 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const required = process.argv.includes("--require-intel-telemetry");
 const report = { platform: process.platform, arch: process.arch };
 
+function phase(name) {
+  console.error(`Intel hardware phase: ${name}`);
+}
+
 function checkSnapshot(snapshot) {
   for (const [group, fields] of Object.entries(snapshot)) {
     if (fields === null || typeof fields !== "object" || Array.isArray(fields))
@@ -70,9 +74,16 @@ function checkBatch(batch, inventory, includeProcesses) {
   }
 }
 
+phase("open");
 const monitor = await GpuMonitor.open();
 try {
+  phase("discovery and prerequisites");
   const inventory = await monitor.gpus();
+  report.devices = inventory.map((gpu) => ({
+    identity: gpu.identity,
+    capabilities: gpu.capabilities,
+  }));
+  report.initialDiagnostics = await monitor.diagnostics();
   const intel = inventory.filter((gpu) => gpu.vendor === "intel");
   if (!["win32", "linux"].includes(process.platform) || intel.length === 0) {
     if (required)
@@ -88,7 +99,7 @@ try {
       (await monitor.gpus()).map((gpu) => gpu.id),
       ids,
     );
-    report.initialDiagnostics = await monitor.diagnostics();
+    phase("refresh and scalar telemetry");
     assert.deepEqual(
       (await monitor.refresh()).map((gpu) => gpu.id),
       ids,
@@ -98,10 +109,6 @@ try {
       includeProcesses: true,
     });
     checkBatch(batch, inventory, true);
-    report.devices = inventory.map((gpu) => ({
-      identity: gpu.identity,
-      capabilities: gpu.capabilities,
-    }));
     report.snapshots = batch;
     report.diagnostics = await monitor.diagnostics();
     report.intelInfo = await Promise.all(intel.map((gpu) => gpu.intelInfo()));
@@ -161,6 +168,7 @@ try {
         );
       }
     }
+    phase("pending batch reads and cancellation");
     const controllers = Array.from({ length: 4 }, () => new AbortController());
     const streams = controllers.map((controller, index) =>
       monitor.samplesAll({
@@ -196,6 +204,7 @@ try {
     );
     report.abortFourStreamsMs = Math.round(performance.now() - abortStarted);
     assert(report.abortFourStreamsMs < 1_000);
+    phase("mixed intervals and early break");
     const timedBatch = monitor.samplesAll({
       intervalMs: 200,
       includeProcesses: true,
@@ -240,6 +249,7 @@ try {
       );
       break;
     }
+    phase("worker telemetry and clean exit");
     const worker = new Worker(
       `
       const { parentPort, workerData } = require('node:worker_threads');
@@ -302,6 +312,7 @@ try {
       ids: observedBatch.gpus.map((entry) => entry.deviceId),
       telemetryPreservedAfterWorkerClose: true,
     };
+    phase("pending-read shutdown and reopen");
     const closingStream = monitor.samplesAll({ intervalMs: 60_000 });
     await closingStream.next();
     const closingNext = closingStream.next();
@@ -322,7 +333,12 @@ try {
       await reopened.close();
     }
   }
+} catch (error) {
+  report.failed = true;
+  report.failure = { name: error.name, message: error.message };
+  throw error;
 } finally {
+  phase("close and report");
   await monitor.close();
+  console.log(JSON.stringify(report, null, 2));
 }
-console.log(JSON.stringify(report, null, 2));

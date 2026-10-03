@@ -66,6 +66,20 @@ const monitor = await esm.GpuMonitor.open();
 try {
   const gpus = await monitor.gpus();
   assert(Array.isArray(gpus));
+  const batch = await monitor.sampleAll();
+  assert.deepEqual(
+    batch.gpus.map((gpu) => gpu.deviceId),
+    gpus.map((gpu) => gpu.id),
+  );
+  const controller = new AbortController();
+  const stream = monitor.samplesAll({
+    intervalMs: 60_000,
+    signal: controller.signal,
+  });
+  assert.equal((await stream.next()).done, false);
+  const pending = stream.next();
+  controller.abort();
+  assert.equal((await pending).done, true);
 } finally {
   await monitor.close();
 }
@@ -74,7 +88,24 @@ const cjsCheck = spawnSync(
   process.execPath,
   [
     "-e",
-    "const { GpuMonitor } = require('let-smi'); GpuMonitor.open().then(async m => { await m.gpus(); await m.close(); });",
+    `
+      const { strict: assert } = require('node:assert');
+      const { GpuMonitor } = require('let-smi');
+      (async () => {
+        const monitor = await GpuMonitor.open();
+        try {
+          const gpus = await monitor.gpus();
+          const batch = await monitor.sampleAll();
+          assert.deepEqual(batch.gpus.map(gpu => gpu.deviceId), gpus.map(gpu => gpu.id));
+          const controller = new AbortController();
+          const stream = monitor.samplesAll({ intervalMs: 60_000, signal: controller.signal });
+          assert.equal((await stream.next()).done, false);
+          const pending = stream.next();
+          controller.abort();
+          assert.equal((await pending).done, true);
+        } finally { await monitor.close(); }
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `,
   ],
   {
     cwd: directory,

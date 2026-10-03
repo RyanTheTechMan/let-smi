@@ -23,6 +23,7 @@ pnpm native:validate-artifact aarch64-apple-darwin # select the host target
 pnpm build
 pnpm native:test-loader
 pnpm pack:check
+pnpm pack:test-local
 pnpm test:linux-hardware
 ```
 
@@ -268,6 +269,14 @@ for an already-published version without rebuilding or republishing it.
 
 ## 0.2.0 Intel and monitor-wide release validation
 
+Version 0.2.0 is prepared for release with the documented limitations below:
+Windows Intel Sysman and Windows/Linux NVIDIA have hardware evidence; Linux Intel
+Sysman/hybrid operation remains unvalidated, and the original Windows watchdog
+outlier remains unexplained. These are accepted release limitations, not passing
+hardware checks. Intel-required tests still fail when Intel hardware or usable
+Sysman readings are absent; hybrid tests retain their explicit prerequisite skips.
+The earlier validation records below preserve their original findings and caveats.
+
 After building the native addon and public package on each Intel host, run:
 
 ```sh
@@ -411,5 +420,136 @@ with stderr separated, and parsed successfully as JSON:
 node scripts/test-intel-hardware.mjs --require-intel-telemetry > artifacts/windows-intel-validation/intel-report.json 2> artifacts/windows-intel-validation/intel-report.stderr.log
 ```
 
-**Linux Intel/Sysman hardware validation remains pending.** The historical Linux
-NVIDIA-only 0.1.0 run above does not satisfy it.
+**Linux Intel/Sysman hardware validation remains pending.** Neither the historical
+Linux NVIDIA-only 0.1.0 run nor the Bazzite 0.2.0 run below satisfies it.
+
+### Observed Bazzite Linux validation — 0.2.0, 2026-10-02
+
+Fetched origin from an existing checkout at `c5f655d` with local changes. Origin
+resolved to the requested baseline `1195b74c8a77df5cb4d4ed9c669618482f7b078b`.
+Validation used a separate detached worktree at that commit; the original tracked
+and untracked changes were preserved. Changes and evidence were packaged for
+review in a ZIP rather than committed or pushed, as requested. No release was
+published.
+
+Execution was directly on the host as UID 1000, without elevation. The active
+`/etc/os-release` identified Bazzite, `systemd-detect-virt --container` returned
+`none`, neither container marker existed, and PID 1's cgroup was `/init.scope`.
+All builds, driver probes, and hardware tests ran in that same environment.
+
+| Component                   | Observed version/identity                                                                                                                   |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| OS                          | Bazzite `44.20260929.0 (Kinoite)`, variant `bazzite-nvidia-open`                                                                            |
+| Kernel                      | `7.2.7-ogc1.1.fc44.x86_64`                                                                                                                  |
+| Architecture / libc         | `x86_64`, Node `x64`, glibc `2.43`; selected `x86_64-unknown-linux-gnu`                                                                     |
+| NVIDIA GPU                  | GeForce RTX 4060 Ti, PCI `0000:01:00.0`, device `10de:2803`, subsystem `1458:4123`, Ada Lovelace                                            |
+| NVIDIA kernel driver / NVML | `615.71.09` / `13.615.71.09`                                                                                                                |
+| Active NVML library         | `/usr/lib64/libnvidia-ml.so.615.71.09`, confirmed in the actual Node test's mapped modules                                                  |
+| Intel GPU / kernel driver   | No Intel display-class PCI function or DRM GPU exposed; neither `i915` nor `xe` bound to an Intel GPU                                       |
+| Level Zero loader / runtime | `libze_loader.so.1` and `libze_intel_gpu.so.1` unavailable to the dynamic loader; no loader/compute-runtime RPM found; versions unavailable |
+| Tooling                     | Node `26.7.0`, installed pnpm `11.19.0` (repository declares `10.32.1`), Rust/Cargo `1.95.0`, GCC `16.2.1`, libdrm `2.4.134`                |
+
+The ordinary user successfully opened `/dev/dri/card1`, `/dev/dri/renderD128`,
+`/dev/nvidia0`, `/dev/nvidiactl`, and NVIDIA modeset/UVM nodes for read/write.
+NVML initialized successfully through its API. The actual Node validator also
+opened the discovered DRM nodes and confirmed the mapped NVML library. Inventory
+and diagnostics correlated sysfs and NVML into exactly one physical GPU, stable
+ID `gpu_nvidia_aec494a8cd150f480b35`, with no duplicate PCI or DRM devices.
+The absent Level Zero library remained an optional `driver-library-missing`
+diagnostic with zero matches and did not prevent inventory, NVML, or shutdown.
+No driver, permission, BIOS, or runtime configuration was changed.
+
+| Requested command                                        | Result                                                                                                                                                                  |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile --ignore-scripts`        | Passed with `CI=true`; lockfile unchanged                                                                                                                               |
+| `pnpm check`                                             | Passed initially and after changes: format, lint, typecheck, 20 TypeScript tests, 71 core + 2 NAPI Rust tests, strict Clippy, six-target configuration, subprocess scan |
+| `pnpm native:build:release`                              | Passed, native x64 glibc release addon                                                                                                                                  |
+| `pnpm build`                                             | Passed, public ESM/CommonJS and declarations                                                                                                                            |
+| `pnpm native:validate-artifact x86_64-unknown-linux-gnu` | Passed, 2,291,192-byte x64 ELF addon                                                                                                                                    |
+| `pnpm native:test-loader`                                | Passed, ESM/CommonJS each discovered one GPU and closed                                                                                                                 |
+| `pnpm pack:test-local`                                   | Passed, local 0.2.0 tarball; ESM/CommonJS each discovered one GPU, sampled batches, aborted streams, and exited                                                         |
+| `pnpm test:intel-hardware --require-intel-telemetry`     | Failed all five consecutive initial runs and all five after test changes: `Intel release validation requires a Windows or Linux Intel host`                             |
+| `pnpm test:linux-hardware`                               | Skipped all five consecutive initial runs and all five after test changes: `requires at least one Intel GPU`                                                            |
+
+The last two rows are missing hardware/runtime prerequisites, not a demonstrated
+telemetry-library defect. Both required tests could not be confirmed unskipped;
+Linux Intel/Sysman and hybrid sign-off remain blocked. Sysfs-only readings would
+not satisfy Sysman validation. No Intel occupancy, measured Intel intervals,
+Sysman sensors/clocks/energy, or i915/Xe correlation is claimed here.
+The existing Windows watchdog outlier remains unresolved; this host supplies no
+new evidence about its cause.
+
+Separate supplemental NVIDIA validation ran five consecutive times with a
+30-second watchdog, preserving every JSON result and stderr phase log. All five
+passed without skips or timeouts, with child exit in 645–811 ms. This validator
+is saved with the evidence and exercises the public API without changing the
+Intel or hybrid prerequisite checks.
+
+Representative NVIDIA observations from `nvidia-report-1.json`:
+
+| Reading                                    | Source / quality           | Observation                                                                                          |
+| ------------------------------------------ | -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Overall / memory-controller utilization    | `nvml` / direct            | `10%` / `8%`; NVML internal sample period, no synthetic measured interval                            |
+| Memory                                     | `nvml` / direct            | `17,175,674,880` total bytes; `2,342,125,568` used bytes                                             |
+| Temperature                                | `nvml` / direct            | GPU core `41 °C`; other temperature fields omitted                                                   |
+| Power / limit / energy                     | `nvml` / direct            | `32.222 W`, `165 W`, `153,070.881 J` cumulative energy                                               |
+| Graphics / compute / memory / video clocks | `nvml` / direct            | `2565` / `2565` / `8751` / `2085 MHz`                                                                |
+| Fan                                        | `nvml` / direct            | `30%`, `1000 RPM`                                                                                    |
+| Encoder / decoder                          | `nvml` / direct            | Available idle `0%` with NVML-reported `100 ms` intervals                                            |
+| Processes                                  | `nvml` / direct memory     | 12 requested process entries with framebuffer allocations; per-process utilization omitted           |
+| Unsupported fields                         | Capability false / omitted | Graphics/compute/copy utilization, extra GPU temperatures, shared/unified memory; no fabricated zero |
+
+Batch and per-GPU streams ran concurrently at requested delivery intervals of
+200 ms and 500 ms, with process inclusion enabled only on the batch. Timestamps
+advanced on both; encoder/decoder retained their own 100 ms NVML intervals.
+The four 60-second pending batch streams alternated process settings: enabled
+streams included processes, disabled streams omitted them. Filesystem reads
+completed in 0.089–0.110 ms, abort of all four reads in 0.223–0.242 ms, and close
+with a pending batch read in 2.181–3.436 ms. Batch/per-GPU early breaks,
+idempotent close, use-after-close rejection, refresh, reopen, and successful
+worker exit passed. Worker telemetry and main-monitor telemetry after worker
+close retained the available NVML fields and stable IDs.
+
+Test defects fixed during this work:
+
+- The Intel child previously emitted no JSON on assertion/prerequisite failure.
+  It now saves discovered devices, initial diagnostics, and a structured failure
+  before exiting nonzero. Assertions and required telemetry semantics remain
+  unchanged; stderr carries phase markers and the original error.
+- Linux timeout errors now preserve captured child stderr, and the parent waits
+  for `close` so output pipes drain before JSON parsing. Child phases are marked.
+- Linux worker isolation now waits for a successful worker exit and rejects
+  missing inventory, rather than resolving immediately on its message.
+
+A direct probe of the revised Linux worker helper passed on the NVIDIA GPU.
+A deliberately hanging fixture verified the Linux parent's existing 30-second
+watchdog kills the child and retains its phase marker (30,053 ms including
+process cleanup). That was a synthetic watchdog check, not a hardware timeout.
+No actual hardware watchdog expired; no deadline was increased and no
+retry-to-pass logic was used. No telemetry runtime code or loader policy changed.
+The full quality gate still verifies optional fallback, loader security, explicit
+zero/unavailable semantics, and absence of telemetry subprocesses.
+
+All logs and reports are in `artifacts/bazzite-gpu-validation/` in the review ZIP.
+Direct Node invocations separated stdout JSON from stderr:
+
+```sh
+node scripts/test-intel-hardware.mjs --require-intel-telemetry > artifacts/bazzite-gpu-validation/intel-report.json 2> artifacts/bazzite-gpu-validation/intel-report.stderr.log
+node scripts/test-linux-hardware.mjs > artifacts/bazzite-gpu-validation/linux-report.json 2> artifacts/bazzite-gpu-validation/linux-report.stderr.log
+```
+
+Both final files parsed as JSON: Intel reported `failed: true` with exit code 1;
+Linux reported `skipped: true`. The initial empty Intel stdout and its stderr are
+retained as `intel-report-initial.*`; initial and final repeat logs are retained
+separately. `host.json`, `commands.json`, `direct-report-final-outcomes.json`,
+`nvidia-report-1.json` through `nvidia-report-5.json`,
+`nvidia-repeat-results.json`, and the supplemental validator sources provide the
+remaining evidence. The first supplemental draft had an incorrect test reference
+to `identity.memory` rather than `snapshot.memory`; its failure log is retained
+as `nvidia-initial-report.*`. This was corrected before the five-run series and
+was not a library defect.
+
+Still untested: Linux Intel hardware/Sysman, hybrid operation, real missing-NVML
+fallback, permission-denied driver calls, AMD, multiple NVIDIA devices,
+MIG/vGPU/SR-IOV, device reset/removal, hot-unplug, sleep/wake, ARM64 glibc, and musl
+hardware. Deterministic coverage does not replace these hardware claims.
