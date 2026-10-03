@@ -11,6 +11,10 @@ const packageEntry = pathToFileURL(
 const fixturePath = fileURLToPath(import.meta.url);
 const { GpuMonitor } = await import(packageEntry);
 
+function phase(name) {
+  console.error(`Windows hardware phase: ${name}`);
+}
+
 const sleep = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 
@@ -92,7 +96,7 @@ function metricObservation(metric) {
   };
 }
 
-async function testWorkerIsolation() {
+async function testWorkerIsolation(expectedIds) {
   const source = `
     import { parentPort } from "node:worker_threads";
     import { GpuMonitor } from ${JSON.stringify(packageEntry)};
@@ -107,10 +111,16 @@ async function testWorkerIsolation() {
   const result = await withDeadline(
     new Promise((resolvePromise, reject) => {
       const worker = new Worker(source, { eval: true, type: "module" });
-      worker.once("message", resolvePromise);
+      let inventory;
+      worker.once("message", (value) => {
+        inventory = value;
+      });
       worker.once("error", reject);
       worker.once("exit", (code) => {
         if (code !== 0) reject(new Error(`worker exited with code ${code}`));
+        else if (inventory === undefined)
+          reject(new Error("worker exited without reporting its inventory"));
+        else resolvePromise(inventory);
       });
     }),
     10_000,
@@ -118,46 +128,51 @@ async function testWorkerIsolation() {
   );
   assert.equal(result.count, 2);
   assert.equal(new Set(result.ids).size, 2);
+  assert.deepEqual(result.ids, expectedIds);
 }
 
 async function testMonitor() {
   let expectedIds;
-  let firstPdhIntervalMs;
+  let firstIntelOverall;
+  phase("Intel first-sample baseline");
   const firstSampleMonitor = await GpuMonitor.open();
   const firstSampleIntel = (await firstSampleMonitor.gpus()).find(
     (gpu) => gpu.vendor === "intel",
   );
   assert(firstSampleIntel);
   const firstSampleStream = firstSampleIntel.samples({ intervalMs: 250 });
-  const firstPdhSnapshot = await firstSampleStream.next();
-  assert.equal(firstPdhSnapshot.done, false);
-  assert.equal(firstPdhSnapshot.value.utilization.overall.available, false);
+  const firstIntelSnapshot = await firstSampleStream.next();
+  assert.equal(firstIntelSnapshot.done, false);
+  assert.equal(firstIntelSnapshot.value.utilization.overall.available, false);
   assert.equal(
-    firstPdhSnapshot.value.utilization.overall.reason,
+    firstIntelSnapshot.value.utilization.overall.reason,
     "first-sample",
   );
-  assert.equal(firstPdhSnapshot.value.processes, undefined);
+  assert.equal(firstIntelSnapshot.value.processes, undefined);
   for (const [name, metric] of Object.entries({
-    graphics: firstPdhSnapshot.value.utilization.graphics,
-    compute: firstPdhSnapshot.value.utilization.compute,
-    copy: firstPdhSnapshot.value.utilization.copy,
-    encoder: firstPdhSnapshot.value.utilization.encoder,
-    decoder: firstPdhSnapshot.value.utilization.decoder,
+    graphics: firstIntelSnapshot.value.utilization.graphics,
+    compute: firstIntelSnapshot.value.utilization.compute,
+    copy: firstIntelSnapshot.value.utilization.copy,
+    encoder: firstIntelSnapshot.value.utilization.encoder,
+    decoder: firstIntelSnapshot.value.utilization.decoder,
   })) {
     assert(metric, `Intel first sample is missing ${name}`);
     assert.equal(metric.available, false, `${name} must need a baseline`);
     assert.equal(metric.reason, "first-sample", `${name} first-sample reason`);
   }
-  const secondPdhSnapshot = await firstSampleStream.next();
-  assert.equal(secondPdhSnapshot.done, false);
+  const secondIntelSnapshot = await firstSampleStream.next();
+  assert.equal(secondIntelSnapshot.done, false);
   assertMetric(
-    secondPdhSnapshot.value.utilization.overall,
-    "intel.secondPdhOverall",
+    secondIntelSnapshot.value.utilization.overall,
+    "intel.secondOverall",
   );
-  firstPdhIntervalMs = secondPdhSnapshot.value.utilization.overall.intervalMs;
+  firstIntelOverall = metricObservation(
+    secondIntelSnapshot.value.utilization.overall,
+  );
   assert(
-    Number.isFinite(firstPdhIntervalMs) && firstPdhIntervalMs > 0,
-    "the second PDH sample must expose its measured interval",
+    Number.isFinite(firstIntelOverall.intervalMs) &&
+      firstIntelOverall.intervalMs > 0,
+    "the second Intel rate sample must expose its measured interval",
   );
   await firstSampleStream.return();
   await firstSampleMonitor.close();
@@ -165,6 +180,7 @@ async function testMonitor() {
   const monitor = await GpuMonitor.open();
   const report = {};
   try {
+    phase("discovery, refresh, and scalar samples");
     const first = await monitor.gpus();
     const second = await monitor.gpus();
     assert.equal(
@@ -335,6 +351,7 @@ async function testMonitor() {
       hasPState: nvidiaInfo.pState !== undefined,
     };
 
+    phase("pending streams and cancellation");
     const streamControllers = Array.from(
       { length: 4 },
       () => new AbortController(),
@@ -383,6 +400,7 @@ async function testMonitor() {
       "early break must cancel its subscription",
     );
 
+    phase("provider priorities and diagnostics");
     const diagnostics = await monitor.diagnostics();
     report.providers = diagnostics.providers;
     const provider = (id) =>
@@ -430,13 +448,31 @@ async function testMonitor() {
         selection.metric === "utilization.overall",
     );
     assert(intelOverall, "Intel overall merge diagnostics are missing");
-    assert(
-      intelOverall.candidates.some(
-        (candidate) => candidate.source === "windows-pdh" && candidate.selected,
-      ),
-      "PDH must supply Intel overall utilization",
+    const pdhCandidate = intelOverall.candidates.find(
+      (candidate) => candidate.source === "windows-pdh",
     );
-    report.firstPdhIntervalMs = firstPdhIntervalMs;
+    assert(
+      pdhCandidate,
+      "PDH must remain visible as the Intel fallback candidate",
+    );
+    const sysmanCandidate = intelOverall.candidates.find(
+      (candidate) => candidate.source === "level-zero",
+    );
+    const expectedIntelSource = sysmanCandidate ? "level-zero" : "windows-pdh";
+    assert.deepEqual(
+      intelOverall.candidates
+        .filter((candidate) => candidate.selected)
+        .map((candidate) => candidate.source),
+      [expectedIntelSource],
+      "Sysman must win Intel overall utilization when it supplies a reading; otherwise PDH must win",
+    );
+    if (sysmanCandidate) {
+      assert.equal(provider("level-zero")?.loaded, true);
+      assert.equal(provider("level-zero")?.devicesMatched, 1);
+      assert(sysmanCandidate.score > pdhCandidate.score);
+      assert.equal(pdhCandidate.selected, false);
+    }
+    report.firstIntelOverall = firstIntelOverall;
     report.warningCount = diagnostics.warnings.length;
     report.overallSelections = {
       intel: intelOverall.candidates
@@ -448,6 +484,7 @@ async function testMonitor() {
       })),
     };
     report.gpus = refreshed.map((gpu) => ({
+      id: gpu.id,
       vendor: gpu.vendor,
       name: gpu.identity.name,
       kind: gpu.identity.kind,
@@ -458,11 +495,13 @@ async function testMonitor() {
       subsystemDeviceId: gpu.identity.pci?.subsystemDeviceId,
     }));
   } finally {
+    phase("main monitor close");
     const closeStarted = performance.now();
     await withDeadline(monitor.close(), 3_000, "monitor.close()");
     report.closeMs = Math.round(performance.now() - closeStarted);
   }
 
+  phase("close with four pending reads");
   const closeMonitor = await GpuMonitor.open();
   const closeGpu = (await closeMonitor.gpus()).find(
     (gpu) => gpu.vendor === "nvidia",
@@ -483,6 +522,7 @@ async function testMonitor() {
     assert.deepEqual(result, { value: undefined, done: true });
   }
 
+  phase("monitor reopen");
   const reopenedMonitor = await GpuMonitor.open();
   try {
     assert.deepEqual(
@@ -496,12 +536,15 @@ async function testMonitor() {
   return report;
 }
 
+phase("prerequisites");
 const skipReason = await checkPrerequisites();
 if (skipReason !== undefined) {
   console.log(JSON.stringify({ skipped: true, reason: skipReason }));
 } else {
   const report = await testMonitor();
-  await testWorkerIsolation();
+  phase("worker inventory and clean exit");
+  await testWorkerIsolation(report.gpus.map((gpu) => gpu.id));
   await sleep(25);
+  phase("completed");
   console.log(JSON.stringify(report, null, 2));
 }

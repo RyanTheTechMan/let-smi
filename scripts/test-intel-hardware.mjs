@@ -20,6 +20,7 @@ function checkSnapshot(snapshot) {
         !("available" in metric)
       )
         continue;
+      assert.equal(typeof metric.available, "boolean");
       if (!metric.available) {
         assert.equal(typeof metric.reason, "string");
         assert(!("value" in metric));
@@ -31,9 +32,41 @@ function checkSnapshot(snapshot) {
       if (group === "utilization") {
         assert(metric.value >= 0 && metric.value <= 100);
         assert.equal(typeof metric.definition, "string");
-      } else if (group !== "temperatures") assert(metric.value >= 0);
+      } else if (group === "temperatures") {
+        assert(metric.value >= -100 && metric.value <= 300);
+      } else {
+        assert(metric.value >= 0);
+        if (group === "fan" && field === "percent") assert(metric.value <= 100);
+      }
+      assert(["direct", "derived", "estimated"].includes(metric.quality));
       if (metric.intervalMs !== undefined) assert(metric.intervalMs >= 0);
     }
+  }
+}
+
+function checkProcesses(gpu, snapshot, includeProcesses) {
+  if (!includeProcesses || !gpu.capabilities.processes) {
+    assert.equal(snapshot.processes, undefined, `${gpu.id} process omission`);
+  } else {
+    assert(Array.isArray(snapshot.processes), `${gpu.id} requested processes`);
+    for (const process of snapshot.processes) {
+      assert(Number.isSafeInteger(process.pid) && process.pid > 0);
+      checkSnapshot({
+        memory: { usedBytes: process.memoryUsedBytes },
+        utilization: process.utilization,
+      });
+    }
+  }
+}
+
+function checkBatch(batch, inventory, includeProcesses) {
+  assert.deepEqual(
+    batch.gpus.map((gpu) => gpu.deviceId),
+    inventory.map((gpu) => gpu.id),
+  );
+  for (const [index, entry] of batch.gpus.entries()) {
+    checkSnapshot(entry.snapshot);
+    checkProcesses(inventory[index], entry.snapshot, includeProcesses);
   }
 }
 
@@ -50,6 +83,12 @@ try {
     report.reason = "requires Windows/Linux with an Intel GPU";
   } else {
     const ids = inventory.map((gpu) => gpu.id);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.deepEqual(
+      (await monitor.gpus()).map((gpu) => gpu.id),
+      ids,
+    );
+    report.initialDiagnostics = await monitor.diagnostics();
     assert.deepEqual(
       (await monitor.refresh()).map((gpu) => gpu.id),
       ids,
@@ -58,11 +97,7 @@ try {
       windowMs: 1_000,
       includeProcesses: true,
     });
-    assert.deepEqual(
-      batch.gpus.map((gpu) => gpu.deviceId),
-      ids,
-    );
-    batch.gpus.forEach((entry) => checkSnapshot(entry.snapshot));
+    checkBatch(batch, inventory, true);
     report.devices = inventory.map((gpu) => ({
       identity: gpu.identity,
       capabilities: gpu.capabilities,
@@ -70,6 +105,22 @@ try {
     report.snapshots = batch;
     report.diagnostics = await monitor.diagnostics();
     report.intelInfo = await Promise.all(intel.map((gpu) => gpu.intelInfo()));
+    assert.deepEqual(
+      await Promise.all(intel.map((gpu) => gpu.intelInfo())),
+      report.intelInfo,
+      "vendor information must not advance engine counters",
+    );
+    report.unsupportedIntelFields = intel.map((gpu) => ({
+      deviceId: gpu.id,
+      fields: [
+        "temperatures.coreCelsius",
+        "temperatures.memoryCelsius",
+        "power.drawWatts",
+        "power.energyJoules",
+        "clocks.memoryMHz",
+        "processes",
+      ].filter((field) => !gpu.supports(field)),
+    }));
     const successful = batch.gpus
       .filter((entry) => intel.some((gpu) => gpu.id === entry.deviceId))
       .flatMap((entry) =>
@@ -99,6 +150,17 @@ try {
       );
     }
     report.intelTelemetryAvailable = successful.length > 0;
+    for (const metric of successful) {
+      if (
+        metric.quality === "derived" &&
+        metric.definition.includes("engine")
+      ) {
+        assert(
+          metric.intervalMs > 0,
+          "Sysman occupancy needs a measured interval",
+        );
+      }
+    }
     const controllers = Array.from({ length: 4 }, () => new AbortController());
     const streams = controllers.map((controller, index) =>
       monitor.samplesAll({
@@ -108,10 +170,18 @@ try {
       }),
     );
     const initial = await Promise.all(streams.map((stream) => stream.next()));
-    initial.forEach((result) => {
+    initial.forEach((result, index) => {
       assert.equal(result.done, false);
-      result.value.gpus.forEach((entry) => checkSnapshot(entry.snapshot));
+      checkBatch(result.value, inventory, index % 2 === 0);
     });
+    report.mixedProcessStreams = initial.map((result, index) => ({
+      includeProcesses: index % 2 === 0,
+      gpus: result.value.gpus.map((entry) => ({
+        deviceId: entry.deviceId,
+        processesPresent: entry.snapshot.processes !== undefined,
+        processCount: entry.snapshot.processes?.length,
+      })),
+    }));
     const pending = streams.map((stream) => stream.next());
     const started = performance.now();
     await readFile(resolve(repositoryRoot, "package.json"));
@@ -119,10 +189,50 @@ try {
       performance.now() - started,
     );
     assert(report.fsReadWhileFourStreamsPendingMs < 750);
+    const abortStarted = performance.now();
     controllers.forEach((controller) => controller.abort());
     (await Promise.all(pending)).forEach((result) =>
       assert.equal(result.done, true),
     );
+    report.abortFourStreamsMs = Math.round(performance.now() - abortStarted);
+    assert(report.abortFourStreamsMs < 1_000);
+    const timedBatch = monitor.samplesAll({
+      intervalMs: 200,
+      includeProcesses: true,
+    });
+    const timedIntel = intel[0].samples({ intervalMs: 500 });
+    const timedFirst = await Promise.all([
+      timedBatch.next(),
+      timedIntel.next(),
+    ]);
+    checkBatch(timedFirst[0].value, inventory, true);
+    checkSnapshot(timedFirst[1].value);
+    checkProcesses(intel[0], timedFirst[1].value, false);
+    const timedSecond = await Promise.all([
+      timedBatch.next(),
+      timedIntel.next(),
+    ]);
+    assert.equal(timedSecond[0].done, false);
+    assert.equal(timedSecond[1].done, false);
+    checkBatch(timedSecond[0].value, inventory, true);
+    checkSnapshot(timedSecond[1].value);
+    checkProcesses(intel[0], timedSecond[1].value, false);
+    for (let index = 0; index < 2; index += 1) {
+      assert(
+        timedSecond[index].value.sampledAt > timedFirst[index].value.sampledAt,
+      );
+    }
+    report.streamIntervals = {
+      batch: {
+        requestedIntervalMs: 200,
+        snapshots: timedSecond[0].value,
+      },
+      intel: {
+        requestedIntervalMs: 500,
+        snapshot: timedSecond[1].value,
+      },
+    };
+    await Promise.all([timedBatch.return(), timedIntel.return()]);
     for await (const value of monitor.samplesAll({ intervalMs: 100 })) {
       assert.deepEqual(
         value.gpus.map((gpu) => gpu.deviceId),
@@ -135,7 +245,7 @@ try {
       const { parentPort, workerData } = require('node:worker_threads');
       const { GpuMonitor } = require(workerData.entry);
       (async () => { const monitor = await GpuMonitor.open(); try {
-        const batch = await monitor.sampleAll(); parentPort.postMessage(batch.gpus.map(gpu => gpu.deviceId));
+        const batch = await monitor.sampleAll({ windowMs: 1_000 }); parentPort.postMessage(batch);
       } finally { await monitor.close(); } })().catch(error => { throw error; });
     `,
       {
@@ -145,7 +255,7 @@ try {
         },
       },
     );
-    const workerIds = new Promise((resolvePromise, reject) => {
+    const workerBatch = new Promise((resolvePromise, reject) => {
       worker.once("message", resolvePromise);
       worker.once("error", reject);
     });
@@ -157,8 +267,41 @@ try {
           : reject(new Error(`worker exit ${code}`)),
       );
     });
-    const [observedIds] = await Promise.all([workerIds, workerExit]);
-    assert.deepEqual(observedIds, ids);
+    const [observedBatch] = await Promise.all([workerBatch, workerExit]);
+    checkBatch(observedBatch, inventory, false);
+    const afterWorker = await monitor.sampleAll({
+      windowMs: 1_000,
+      includeProcesses: true,
+    });
+    checkBatch(afterWorker, inventory, true);
+    // A worker closing its providers must not disable the main monitor.
+    for (const entry of batch.gpus) {
+      const after = afterWorker.gpus.find(
+        (gpu) => gpu.deviceId === entry.deviceId,
+      );
+      const isolated = observedBatch.gpus.find(
+        (gpu) => gpu.deviceId === entry.deviceId,
+      );
+      for (const [group, fields] of Object.entries(entry.snapshot)) {
+        if (!fields || typeof fields !== "object" || Array.isArray(fields))
+          continue;
+        for (const [field, metric] of Object.entries(fields)) {
+          if (
+            !metric?.available ||
+            !["level-zero", "nvml"].includes(metric.source)
+          )
+            continue;
+          for (const snapshot of [after.snapshot, isolated.snapshot]) {
+            assert.equal(snapshot[group][field]?.available, true);
+            assert.equal(snapshot[group][field].source, metric.source);
+          }
+        }
+      }
+    }
+    report.workerIsolation = {
+      ids: observedBatch.gpus.map((entry) => entry.deviceId),
+      telemetryPreservedAfterWorkerClose: true,
+    };
     const closingStream = monitor.samplesAll({ intervalMs: 60_000 });
     await closingStream.next();
     const closingNext = closingStream.next();

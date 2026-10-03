@@ -290,4 +290,126 @@ On an Intel/NVIDIA hybrid host, additionally run the existing
 `pnpm test:windows-hardware` or `pnpm test:linux-hardware`. Save the JSON report
 from the Intel test, which records device and driver identity, capabilities,
 observed fields, measured intervals, and diagnostics. Hardware validation for the
-new Intel provider is currently pending on both platforms.
+new Intel provider passed on the Windows host below; Linux Intel validation remains
+**pending**. The Windows watchdog outlier below remains a reliability caveat.
+
+### Observed Windows Intel/NVIDIA validation — 0.2.0, 2026-10-02
+
+Started from `4532e9f9626a92933a4766b1e67f4e3b3f758f2f` after fetching origin,
+on `codex/windows-intel-validation`. The starting checkout was clean. No release
+was published.
+
+Validation ran without an elevated administrator token. Host and active runtimes:
+
+| Component            | Observed version/identity                                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| OS                   | Windows 11 Pro, display version 26H2, build 26300.9550, x64                                                      |
+| CPU                  | Intel Core i9-12900K                                                                                             |
+| Intel GPU            | UHD Graphics 770, integrated, PCI `0000:00:02.0`, device `8086:4680`, subsystem `1458:d000`                      |
+| Intel display driver | `32.0.101.6129` (signed, `oem157.inf`)                                                                           |
+| Level Zero loader    | System32 `ze_loader.dll` file/product version `1.17.42`                                                          |
+| Active Intel runtime | DriverStore `ze_intel_gpu64.dll` file/product version `23.20.101.6129`                                           |
+| NVIDIA GPU           | GeForce RTX 4070 Ti, discrete, PCI `0000:01:00.0`, device `10de:2782`, subsystem `1458:40cb`, Ada Lovelace       |
+| NVIDIA driver / NVML | `617.14` / `13.617.14`; signed Windows driver `32.0.16.1714` (`oem361.inf`)                                      |
+| NVML DLL             | Loaded through System32; file/product version `8.17.16.1714`; the mapped DriverStore module had the same version |
+| Tooling              | Node `25.9.0`, installed pnpm `11.19.0`, Rust/Cargo `1.88.0`                                                     |
+
+Loaded-module inspection confirmed the active Intel runtime, rather than assuming
+that every installed DriverStore copy was in use. The Level Zero tracing layer
+also mapped from System32 at `1.17.42`; its debug traces went to stderr. Four
+virtual display adapters visible to Windows did not add physical GPU duplicates.
+DXGI/PDH matched two devices, NVML matched one, and Sysman matched one Intel PCI
+identity. ADLX was explicitly `driver-library-missing`; diagnostics had no warnings.
+
+Observed sources and intervals in the saved Intel JSON report:
+
+| Reading                                    | Source / quality            | Observation                                                                                                                                                                   |
+| ------------------------------------------ | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Intel overall utilization                  | `level-zero` / derived      | `0.958517%`, device-wide all-engine active residency, measured `1009 ms`                                                                                                      |
+| Intel compute utilization                  | `level-zero` / derived      | `0.692247%`, maximum measured compute-group occupancy, measured `1009 ms`                                                                                                     |
+| Intel graphics clock                       | `level-zero` / direct       | Actual GPU-domain frequency `1550 MHz`; no synthetic interval                                                                                                                 |
+| Intel engine extension                     | `level-zero` / derived      | `all`, `compute`, and combined `media` groups; media's measured idle `0` remained available; no encode/decode split was guessed                                               |
+| Intel graphics/copy/decoder                | `windows-pdh` / derived     | Graphics `1.723751%`; copy and decoder available `0`; measured `1007 ms`                                                                                                      |
+| Intel encoder                              | `windows-pdh` / unavailable | `temporarily-unavailable`: no matching WDDM encode counter                                                                                                                    |
+| Intel sensors and other unsupported fields | Capability false / omitted  | GPU/memory temperature, GPU power/energy, memory clock, fan, and process telemetry unsupported; no zero was fabricated                                                        |
+| NVIDIA telemetry                           | `nvml` / direct             | Overall/memory-controller utilization, VRAM used, temperature, power/limit/energy, graphics/SM/memory/video clocks, fan percent/RPM, encoder/decoder, and requested processes |
+| NVIDIA encoder/decoder                     | `nvml` / direct             | Available idle `0`, NVML-reported `100 ms` intervals                                                                                                                          |
+| NVIDIA graphics/copy fallback              | `windows-pdh` / derived     | Available idle `0`, measured `1007 ms`; NVIDIA compute counter explicitly unavailable                                                                                         |
+
+The NVIDIA sample recorded 141,918,208 used VRAM bytes, 51 °C, 39.161 W,
+285 W enforced limit, 29,763.793 J cumulative energy, graphics/SM clocks
+2640 MHz, memory 10501 MHz, video 2115 MHz, and two process entries. Under WDDM
+those process entries lacked per-process memory/utilization readings; these were
+omitted. Idle fan `0%`/`0 RPM` remained available in the Intel report; a later
+hybrid report also observed NVML fan `66%`/`1499 RPM`.
+
+Batch and per-GPU streams ran concurrently at requested delivery intervals of
+200 ms and 500 ms. Their saved Intel counter intervals were 218 ms and 93 ms
+(PDH 218 ms and 95 ms), respectively: shared faster polling advances counter
+baselines, so measured intervals need not equal delivery intervals. A separate
+fresh 250 ms Intel stream returned `first-sample`, then a `level-zero` reading
+with a measured 265 ms interval. The hybrid one-shot sample measured Sysman
+1017 ms and PDH 1015 ms.
+
+All requested commands passed in their final runs:
+
+| Check                                                  | Result                                                                                                                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm install --frozen-lockfile --ignore-scripts`      | Passed with `CI=true` after the initial noninteractive module-purge prompt; lockfile unchanged                                                                     |
+| `pnpm check`                                           | Passed: formatting, lint, typecheck, 20 TypeScript tests, 70 core + 2 NAPI Rust tests, strict Clippy, six-target packaging configuration, and subprocess scan      |
+| `pnpm native:build:release`                            | Passed, Windows x64 release addon                                                                                                                                  |
+| `pnpm build`                                           | Passed, ESM/CommonJS and declarations                                                                                                                              |
+| `pnpm native:validate-artifact x86_64-pc-windows-msvc` | Passed, 2,693,632-byte x64 PE addon                                                                                                                                |
+| `pnpm native:test-loader`                              | Passed, ESM/CommonJS public loader and idempotent close                                                                                                            |
+| `pnpm pack:test-local`                                 | Passed, `let-smi-0.2.0.tgz` installed locally; actionable missing-addon error; ESM/CommonJS each discovered two GPUs, sampled batches, aborted streams, and exited |
+| `pnpm test:intel-hardware --require-intel-telemetry`   | Passed with actual Sysman telemetry; no skip; unchanged 40-second parent deadline                                                                                  |
+| `pnpm test:windows-hardware`                           | Passed; no skip; unchanged 20-second parent deadline                                                                                                               |
+
+Hardware assertions covered stable IDs through repeated enumeration, refresh,
+batch delivery, monitor reopen, and worker isolation. The IDs were
+`gpu_intel_b1709f985028a46d84f8` and `gpu_nvidia_c70bfd049153a30d7724`. Four pending
+60-second batch streams alternated process settings: both process-enabled streams
+received two NVIDIA processes, both disabled streams omitted them, and Intel
+processes stayed absent in every stream. A concurrent filesystem read took 1 ms;
+abort of all four reads rounded to 0 ms; closing with a pending batch read took
+6 ms. Early break, different delivery intervals, idempotent close, use-after-close
+rejection, and worker exit passed. A worker collected Intel/NVIDIA telemetry and
+closed; the main monitor retained its available Sysman/NVML fields afterward.
+Deterministic Rust coverage separately proved scalar polling coalesces across
+batch/per-device consumers with mixed process settings.
+
+The initial hybrid failure was an obsolete assertion requiring PDH to win Intel
+overall utilization. It now requires Sysman to win when an available Sysman
+candidate exists, requires its higher score, and retains PDH as the visible
+fallback. Otherwise PDH must win. NVIDIA NVML priority/fallback assertions remain
+in force. Intel assertions now check process omission/enrichment, worker
+telemetry survival, measured intervals, metric bounds, and cancellation latency.
+The hybrid worker test now explicitly waits for a successful worker exit and
+compares its IDs to the main monitor's IDs. No runtime loading policy was changed:
+Sysman retains its System32-only search; NVML retains validated OS-derived
+absolute paths and restricted dependency loading.
+
+One subsequent hybrid run exceeded its 20-second watchdog without a captured
+phase. Investigation could not reproduce it in 12 instrumented child runs
+(1897–1948 ms). The watchdog now preserves child stderr and the test emits phase
+markers to stderr. After explicitly awaiting worker exit, the final parent test
+passed five consecutive runs (1945–1978 ms), plus its ordinary pnpm invocation.
+The original timeout's cause is **unresolved**, so it remains a reliability caveat;
+the deadline was not increased and no retry-to-pass behavior was added to the
+tests. Intel Sysman metric validation is confirmed on this host, but release
+readiness still needs Linux Intel validation and resolution or explanation of
+that watchdog outlier. Real device loss/reset, sleep/wake, missing Intel runtime,
+and Intel sensor-permission failures were not hardware-tested here; existing
+deterministic coverage is not a hardware claim.
+
+Local evidence is saved in the ignored `artifacts/windows-intel-validation/`
+directory: `intel-report.json`, `windows-report.json`, `host.json`, command logs,
+and repeat-run summaries. The Intel JSON was saved by invoking Node directly,
+with stderr separated, and parsed successfully as JSON:
+
+```powershell
+node scripts/test-intel-hardware.mjs --require-intel-telemetry > artifacts/windows-intel-validation/intel-report.json 2> artifacts/windows-intel-validation/intel-report.stderr.log
+```
+
+**Linux Intel/Sysman hardware validation remains pending.** The historical Linux
+NVIDIA-only 0.1.0 run above does not satisfy it.

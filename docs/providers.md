@@ -261,7 +261,9 @@ runtimes, unsupported calls, permission failures, and device loss remain explici
 Sysman receives preference for its available Intel fields; PDH and sysfs candidates
 remain fallbacks.
 
-The provider has deterministic tests and compilation coverage. Windows and Linux
-Intel hardware validation is required before declaring the new backend
-hardware-validated. The previous Windows PDH/NVIDIA validation remains historical
-coverage of version 0.1.0.
+The provider has deterministic tests and compilation coverage. Windows UHD 770
+Sysman engine occupancy and actual GPU frequency were hardware-validated on
+2026-10-02; unsupported sensors remained absent. Linux Intel hardware validation
+remains pending. See [testing](testing.md) for driver versions, evidence, and the
+unresolved Windows watchdog outlier. The previous Windows PDH/NVIDIA validation
+remains historical coverage of version 0.1.0.

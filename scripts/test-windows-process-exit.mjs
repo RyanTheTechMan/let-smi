@@ -31,7 +31,7 @@ const result = await new Promise((resolvePromise, reject) => {
     child.kill();
     reject(
       new Error(
-        `Windows hardware child did not exit within ${String(deadlineMs)} ms`,
+        `Windows hardware child did not exit within ${String(deadlineMs)} ms; child stderr:\n${stderr}`,
       ),
     );
   }, deadlineMs);

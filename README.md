@@ -57,18 +57,18 @@ The table describes the current implementation, not the theoretical capability
 of a vendor SDK. A check means the provider is implemented; actual fields still
 depend on the installed driver, device, permissions, and sensors.
 
-| Platform/provider   | Inventory                                | Overall utilization                          | Other current telemetry                                                                                                      |
-| ------------------- | ---------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Windows generic     | DXGI name, IDs, memory, LUID             | PDH maximum active WDDM engine               | graphics/compute/copy/encode/decode engine groups when present                                                               |
-| Windows NVIDIA      | DXGI + dynamically loaded NVML           | NVML, with PDH fallback                      | VRAM, temperature, power/energy, clocks, fan, encoder/decoder, processes, and NVIDIA extensions                              |
-| Windows AMD         | DXGI code path; not hardware-tested here | PDH code path; not hardware-tested here      | ADLX is unimplemented/diagnostic-only; no AMD sensor claim                                                                   |
-| Windows Intel       | DXGI/D3DKMT; UHD 770 tested              | PDH tested on UHD 770; optional Sysman       | Sysman engines, GPU/memory clocks, temperature, and GPU power/energy when supported; new provider awaits hardware validation |
-| Linux generic       | PCI + DRM sysfs, driver, IDs             | provider-dependent                           | hwmon sensors where safely attributable                                                                                      |
-| Linux NVIDIA        | sysfs + dynamically loaded NVML          | NVML                                         | NVML metrics and extensions as above                                                                                         |
-| Linux AMD           | PCI/DRM sysfs                            | `gpu_busy_percent`                           | VRAM/GTT, memory busy, hwmon temperature/power/energy/fan, DPM clocks                                                        |
-| Linux Intel i915/Xe | PCI/DRM sysfs                            | optional Level Zero Sysman engine occupancy  | current GT clocks/hwmon, plus optional Sysman clocks, temperatures, GPU power/energy                                         |
-| macOS Apple Silicon | Metal                                    | dynamically loaded IOReport active residency | IOReport GPU power/energy and AppleSMC temperature                                                                           |
-| Intel-era macOS     | Metal best effort                        | unavailable in the validated release         | AppleSMC temperature only when a single GPU can be correlated safely                                                         |
+| Platform/provider   | Inventory                                | Overall utilization                          | Other current telemetry                                                                                                     |
+| ------------------- | ---------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Windows generic     | DXGI name, IDs, memory, LUID             | PDH maximum active WDDM engine               | graphics/compute/copy/encode/decode engine groups when present                                                              |
+| Windows NVIDIA      | DXGI + dynamically loaded NVML           | NVML, with PDH fallback                      | VRAM, temperature, power/energy, clocks, fan, encoder/decoder, processes, and NVIDIA extensions                             |
+| Windows AMD         | DXGI code path; not hardware-tested here | PDH code path; not hardware-tested here      | ADLX is unimplemented/diagnostic-only; no AMD sensor claim                                                                  |
+| Windows Intel       | DXGI/D3DKMT; UHD 770 tested              | Sysman and PDH tested on UHD 770             | Sysman engine occupancy and GPU clock tested; GPU/memory clocks, temperature, and GPU power/energy depend on driver support |
+| Linux generic       | PCI + DRM sysfs, driver, IDs             | provider-dependent                           | hwmon sensors where safely attributable                                                                                     |
+| Linux NVIDIA        | sysfs + dynamically loaded NVML          | NVML                                         | NVML metrics and extensions as above                                                                                        |
+| Linux AMD           | PCI/DRM sysfs                            | `gpu_busy_percent`                           | VRAM/GTT, memory busy, hwmon temperature/power/energy/fan, DPM clocks                                                       |
+| Linux Intel i915/Xe | PCI/DRM sysfs                            | optional Level Zero Sysman engine occupancy  | current GT clocks/hwmon, plus optional Sysman clocks, temperatures, GPU power/energy                                        |
+| macOS Apple Silicon | Metal                                    | dynamically loaded IOReport active residency | IOReport GPU power/energy and AppleSMC temperature                                                                          |
+| Intel-era macOS     | Metal best effort                        | unavailable in the validated release         | AppleSMC temperature only when a single GPU can be correlated safely                                                        |
 
 Unknown vendors remain discoverable when DXGI, PCI/DRM, or Metal can enumerate
 them. The Intel+NVIDIA Windows x64 hybrid path is hardware-tested. Windows
@@ -245,7 +245,9 @@ Repository documentation:
 
 - ADLX remains a diagnostic boundary. Level Zero Sysman is implemented on
   Windows/Linux, with field support determined by the installed Intel driver.
-  The new Intel provider has deterministic coverage; hardware validation is pending.
+  Sysman occupancy and GPU clock were validated on Windows UHD 770; Linux Intel
+  hardware validation remains pending. See the watchdog caveat in
+  [testing](docs/testing.md).
 - Windows ARM64 is not a supported or packaged target.
 - Intel Linux utilization requires an accessible Sysman engine counter. Older
   drivers, missing runtimes, and counter permissions can leave it unavailable.
